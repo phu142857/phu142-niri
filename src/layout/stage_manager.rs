@@ -21,10 +21,10 @@ static GROUP_ID_COUNTER: IdCounter = IdCounter::new();
 /// 16:9 default aspect ratio for windows without a saved size.
 const ASPECT_RATIO: f64 = 9.0 / 16.0;
 
-/// Horizontal padding between the stage and the right screen edge.
-const STAGE_RIGHT_PADDING: f64 = 4.;
+/// Gap between the main stage window and the right screen edge.
+const STAGE_RIGHT_PADDING: f64 = 2.;
 
-/// Distance from the left screen edge to cast strip thumbnails.
+/// Gap between cast strip thumbnails and the left screen edge.
 const CAST_STRIP_LEFT_PADDING: f64 = 4.;
 
 /// Hit-test padding around cast thumbnails.
@@ -984,7 +984,7 @@ fn apply_stage_geometry<W: LayoutElement>(
     workspace: &mut Workspace<W>,
     working_area: Rectangle<f64, Logical>,
     strip_width: f64,
-    stage_width: f64,
+    _stage_width: f64,
     monitor_height: f64,
     state: &StageManagerState<W>,
 ) {
@@ -1000,7 +1000,10 @@ fn apply_stage_geometry<W: LayoutElement>(
 
     let gap = workspace.options.layout.gaps;
     let total_gap = gap * (n.saturating_sub(1)) as f64;
-    let slot_width = (stage_width - total_gap) / n as f64;
+    let stage_left = working_area.loc.x + strip_width;
+    let stage_right = working_area.loc.x + working_area.size.w - STAGE_RIGHT_PADDING;
+    let stage_inner_width = (stage_right - stage_left).max(1.);
+    let slot_width = (stage_inner_width - total_gap) / n as f64;
 
     for (i, id) in windows.iter().enumerate() {
         move_to_floating(workspace, id);
@@ -1008,9 +1011,20 @@ fn apply_stage_geometry<W: LayoutElement>(
             continue;
         }
 
+        let x = stage_left + i as f64 * (slot_width + gap);
+        // Fill each slot to the computed right edge; saved width often leaves a large right gap.
+        let window_width = if i + 1 == n {
+            (stage_right - x).max(1.)
+        } else {
+            slot_width
+        };
+
         let saved = workspace.floating.stage_manager_saved_size(id);
-        let size = resolve_stage_window_size(saved, slot_width, monitor_height);
-        let x = working_area.loc.x + strip_width + i as f64 * (slot_width + gap);
+        let mut size = resolve_stage_window_size(saved, window_width, monitor_height);
+        if saved.is_none() {
+            // First time on main: fill to the right edge. Restored windows keep saved width.
+            size.w = window_width.round().max(1.) as i32;
+        }
         let y = working_area.loc.y + (monitor_height - f64::from(size.h)) / 2.;
         set_stage_window_geometry(workspace, id, size, Point::from((x, y)));
     }
@@ -1033,6 +1047,24 @@ fn resolve_stage_window_size(
         .max(1.) as i32;
 
     size
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_stage_window_size_keeps_saved_width() {
+        let saved = Size::from((1200, 800));
+        let size = resolve_stage_window_size(Some(saved), 1800., 1080.);
+        assert_eq!(size.w, 1200);
+    }
+
+    #[test]
+    fn resolve_stage_window_size_defaults_to_available_width() {
+        let size = resolve_stage_window_size(None, 1800., 1080.);
+        assert_eq!(size.w, 1800);
+    }
 }
 
 fn set_stage_window_geometry<W: LayoutElement>(

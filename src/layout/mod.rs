@@ -2545,6 +2545,18 @@ impl<W: LayoutElement> Layout<W> {
                         }
                     }
                 }
+                InteractiveMoveState::StageManagerStrip {
+                    window_id,
+                    pointer_delta: _,
+                    pointer_pos_within_output: _,
+                    output: _,
+                } => {
+                    assert!(
+                        self.has_window(window_id),
+                        "interactive stage-manager strip move must be on an existing window"
+                    );
+                    move_win_id = Some(window_id.clone());
+                }
             }
         }
 
