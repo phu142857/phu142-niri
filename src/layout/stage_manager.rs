@@ -22,7 +22,7 @@ static GROUP_ID_COUNTER: IdCounter = IdCounter::new();
 const ASPECT_RATIO: f64 = 9.0 / 16.0;
 
 /// Horizontal padding between the stage and the right screen edge.
-const STAGE_RIGHT_PADDING: f64 = 16.;
+const STAGE_RIGHT_PADDING: f64 = 4.;
 
 /// Distance from the left screen edge to cast strip thumbnails.
 const CAST_STRIP_LEFT_PADDING: f64 = 4.;
