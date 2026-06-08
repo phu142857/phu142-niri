@@ -894,6 +894,64 @@ fn move_to_floating<W: LayoutElement>(workspace: &mut Workspace<W>, id: &W::Id) 
     }
 }
 
+/// Scroll the cast stack so the focused cast thumbnail stays visible.
+fn scroll_stack_to_focused_cast<W: LayoutElement>(
+    workspace: &Workspace<W>,
+    config: &StageManagerConfig,
+    state: &mut StageManagerState<W>,
+    areas: StageAreas,
+    thumb_width: i32,
+    thumb_height: i32,
+) {
+    let Some(window) = workspace.active_window() else {
+        return;
+    };
+    let Some(index) = state.cast_index_for(window.id()) else {
+        return;
+    };
+
+    let slot_gap = workspace.options.layout.gaps;
+    let vertical = config.stack_position.is_vertical();
+    let thumb_extent = if vertical {
+        f64::from(thumb_height)
+    } else {
+        f64::from(thumb_width)
+    };
+
+    let n = state.total_strip_groups();
+    if n == 0 {
+        return;
+    }
+
+    let content_extent = n as f64 * (thumb_extent + slot_gap) - slot_gap;
+    let viewport_extent = if vertical {
+        areas.stack_area.size.h
+    } else {
+        areas.stack_area.size.w
+    };
+    let max_scroll = (content_extent - viewport_extent).max(0.);
+
+    let origin = if vertical {
+        areas.stack_area.loc.y
+    } else {
+        areas.stack_area.loc.x
+    };
+    let viewport_end = origin + viewport_extent;
+
+    let item_start =
+        origin + slot_gap + index as f64 * (thumb_extent + slot_gap) - state.cast_scroll_offset;
+    let item_end = item_start + thumb_extent;
+
+    let mut scroll = state.cast_scroll_offset;
+    if item_start < origin {
+        scroll = (scroll - (origin - item_start)).max(0.);
+    } else if item_end > viewport_end {
+        scroll = (scroll + (item_end - viewport_end)).min(max_scroll);
+    }
+
+    state.cast_scroll_offset = scroll;
+}
+
 fn apply_geometry<W: LayoutElement>(
     workspace: &mut Workspace<W>,
     config: &StageManagerConfig,
@@ -907,6 +965,8 @@ fn apply_geometry<W: LayoutElement>(
     let thumb_height = (f64::from(thumb_width) * ASPECT_RATIO).round().max(1.) as i32;
 
     let areas = compute_areas(working_area, config);
+
+    scroll_stack_to_focused_cast(workspace, config, state, areas, thumb_width, thumb_height);
 
     state.cast_group_layouts = apply_cast_strip(
         workspace,

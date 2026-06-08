@@ -1052,24 +1052,33 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_left(&mut self) -> bool {
-        if self.floating_is_active.get() {
+        let changed = if self.floating_is_active.get() {
             self.floating.focus_left()
         } else {
             self.scrolling.focus_left()
+        };
+        if changed {
+            self.stage_manager_follow_focus();
         }
+        changed
     }
 
     pub fn focus_right(&mut self) -> bool {
-        if self.floating_is_active.get() {
+        let changed = if self.floating_is_active.get() {
             self.floating.focus_right()
         } else {
             self.scrolling.focus_right()
+        };
+        if changed {
+            self.stage_manager_follow_focus();
         }
+        changed
     }
 
     pub fn focus_column_first(&mut self) {
         if self.floating_is_active.get() {
             self.floating.focus_leftmost();
+            self.stage_manager_follow_focus();
         } else {
             self.scrolling.focus_column_first();
         }
@@ -1078,6 +1087,7 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn focus_column_last(&mut self) {
         if self.floating_is_active.get() {
             self.floating.focus_rightmost();
+            self.stage_manager_follow_focus();
         } else {
             self.scrolling.focus_column_last();
         }
@@ -1110,19 +1120,27 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_down(&mut self) -> bool {
-        if self.floating_is_active.get() {
+        let changed = if self.floating_is_active.get() {
             self.floating.focus_down()
         } else {
             self.scrolling.focus_down()
+        };
+        if changed {
+            self.stage_manager_follow_focus();
         }
+        changed
     }
 
     pub fn focus_up(&mut self) -> bool {
-        if self.floating_is_active.get() {
+        let changed = if self.floating_is_active.get() {
             self.floating.focus_up()
         } else {
             self.scrolling.focus_up()
+        };
+        if changed {
+            self.stage_manager_follow_focus();
         }
+        changed
     }
 
     pub fn focus_down_or_left(&mut self) {
@@ -1160,6 +1178,7 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn focus_window_top(&mut self) {
         if self.floating_is_active.get() {
             self.floating.focus_topmost();
+            self.stage_manager_follow_focus();
         } else {
             self.scrolling.focus_top();
         }
@@ -1168,6 +1187,7 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn focus_window_bottom(&mut self) {
         if self.floating_is_active.get() {
             self.floating.focus_bottommost();
+            self.stage_manager_follow_focus();
         } else {
             self.scrolling.focus_bottom();
         }
@@ -2128,9 +2148,17 @@ impl<W: LayoutElement> Workspace<W> {
             false
         };
 
-        if stage_switch && activated {
-            self.apply_stage_manager_layout();
-            self.floating_is_active = FloatingActive::Yes;
+        if activated {
+            if stage_switch {
+                self.apply_stage_manager_layout();
+                self.floating_is_active = FloatingActive::Yes;
+            } else if self
+                .stage_manager
+                .as_ref()
+                .is_some_and(|state| state.is_cast_window(window))
+            {
+                self.stage_manager_follow_focus();
+            }
         }
 
         activated
@@ -2296,6 +2324,12 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub(super) fn set_floating_inactive(&mut self) {
         self.floating_is_active = FloatingActive::No;
+    }
+
+    fn stage_manager_follow_focus(&mut self) {
+        if self.options.layout.stage_manager.is_some() && self.stage_manager.is_some() {
+            self.apply_stage_manager_layout();
+        }
     }
 
     fn apply_stage_manager_layout(&mut self) {
