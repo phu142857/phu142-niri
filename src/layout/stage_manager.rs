@@ -30,6 +30,9 @@ const STACK_INSET: f64 = STAGE_EDGE_PADDING;
 /// Hit-test padding around cast thumbnails.
 const CAST_HIT_PADDING: f64 = 8.;
 
+/// Mouse wheel scroll speed multiplier for the cast stack.
+const STACK_SCROLL_MOUSE_FACTOR: f64 = 3.0;
+
 /// Maximum windows shown on stage after explicit drag-merge.
 const MAX_PARALLEL_STAGE: usize = 2;
 
@@ -721,8 +724,9 @@ pub fn scroll_cast<W: LayoutElement>(
     };
     let max_scroll = (content_extent - viewport_extent).max(0.);
 
+    let delta = delta_y * STACK_SCROLL_MOUSE_FACTOR;
     let old = state.cast_scroll_offset;
-    state.cast_scroll_offset = (state.cast_scroll_offset + delta_y).clamp(0., max_scroll);
+    state.cast_scroll_offset = (state.cast_scroll_offset + delta).clamp(0., max_scroll);
 
     if (state.cast_scroll_offset - old).abs() < f64::EPSILON {
         return false;
