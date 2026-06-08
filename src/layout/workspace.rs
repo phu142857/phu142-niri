@@ -2329,11 +2329,7 @@ impl<W: LayoutElement> Workspace<W> {
         let Some(config) = self.options.layout.stage_manager.clone() else {
             return false;
         };
-        let strip_w = super::stage_manager::strip_width_for_config(
-            &config,
-            self.working_area().size.w,
-        );
-        if !super::stage_manager::pointer_in_strip_area(point, self.working_area(), strip_w) {
+        if !super::stage_manager::pointer_in_stack_area(point, self.working_area(), &config) {
             return false;
         }
         let Some(mut state) = self.stage_manager.take() else {

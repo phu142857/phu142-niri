@@ -136,9 +136,31 @@ pub struct LayoutPart {
     pub stage_manager: Option<StageManagerPart>,
 }
 
+/// Where the cast stack strip is placed relative to the stage.
+#[derive(knuffel::DecodeScalar, Debug, Default, PartialEq, Eq, Clone, Copy)]
+pub enum StackPosition {
+    /// Vertical cast strip on the left (default).
+    #[default]
+    Left,
+    /// Vertical cast strip on the right.
+    Right,
+    /// Horizontal cast strip at the top.
+    Top,
+    /// Horizontal cast strip at the bottom.
+    Bottom,
+}
+
+impl StackPosition {
+    pub fn is_vertical(self) -> bool {
+        matches!(self, Self::Left | Self::Right)
+    }
+}
+
 /// Stage Manager layout mode configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StageManagerConfig {
+    /// Where the cast stack strip is placed.
+    pub stack_position: StackPosition,
     /// Fraction of the screen width occupied by the stage area (0.1–0.9).
     pub proportion: f64,
     /// Maximum number of app groups visible in the cast strip (overflow goes hidden).
@@ -156,6 +178,7 @@ pub struct StageManagerConfig {
 impl Default for StageManagerConfig {
     fn default() -> Self {
         Self {
+            stack_position: StackPosition::default(),
             proportion: 0.7,
             max_cast_groups: 6,
             thumb_scale: 0.15,
@@ -192,7 +215,11 @@ impl StageManagerConfig {
             .auto_use_as_main_delay_ms
             .map(|n| n.0 as u32)
             .unwrap_or(Self::default().auto_use_as_main_delay_ms);
+        let stack_position = part
+            .stack_position
+            .unwrap_or(Self::default().stack_position);
         Self {
+            stack_position,
             proportion: proportion.clamp(0.1, 0.9),
             max_cast_groups: max_cast_groups.clamp(1, 12),
             thumb_scale: thumb_scale.clamp(0.1, 0.3),
@@ -205,6 +232,8 @@ impl StageManagerConfig {
 
 #[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
 pub struct StageManagerPart {
+    #[knuffel(child, unwrap(argument))]
+    pub stack_position: Option<StackPosition>,
     #[knuffel(child, unwrap(argument))]
     pub proportion: Option<FloatOrInt<0, 1>>,
     #[knuffel(child, unwrap(argument))]
@@ -346,5 +375,31 @@ mod tests {
 
         let sm = config.layout.stage_manager.unwrap();
         assert!((sm.proportion - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn stage_manager_stack_position_parses() {
+        for (value, expected) in [
+            ("left", StackPosition::Left),
+            ("right", StackPosition::Right),
+            ("top", StackPosition::Top),
+            ("bottom", StackPosition::Bottom),
+        ] {
+            let config = Config::parse_mem(&format!(
+                r#"
+                layout {{
+                    stage-manager {{
+                        stack-position "{value}"
+                    }}
+                }}
+                "#
+            ))
+            .unwrap();
+
+            assert_eq!(
+                config.layout.stage_manager.unwrap().stack_position,
+                expected
+            );
+        }
     }
 }

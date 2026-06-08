@@ -1,13 +1,13 @@
 //! Stage Manager layout mode (macOS-style).
 //!
 //! Windows are organized into groups: one **active** group on the stage and up to N **cast**
-//! groups shown as single live thumbnails in a vertical strip (macOS-style). Additional groups
-//! are kept in **hidden** overflow.
+//! groups shown as single live thumbnails in a strip (macOS-style). The strip can be placed on
+//! any screen edge via `stack-position`. Additional groups are kept in **hidden** overflow.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
-use niri_config::StageManagerConfig;
+use niri_config::{StackPosition, StageManagerConfig};
 use niri_ipc::SizeChange;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
@@ -21,11 +21,11 @@ static GROUP_ID_COUNTER: IdCounter = IdCounter::new();
 /// 16:9 default aspect ratio for windows without a saved size.
 const ASPECT_RATIO: f64 = 9.0 / 16.0;
 
-/// Gap between the main stage window and the right screen edge.
-const STAGE_RIGHT_PADDING: f64 = 2.;
+/// Padding between layout areas and the screen edges.
+const STAGE_EDGE_PADDING: f64 = 2.;
 
-/// Gap between cast strip thumbnails and the left screen edge.
-const CAST_STRIP_LEFT_PADDING: f64 = 4.;
+/// Inset of cast thumbnails within the stack area.
+const STACK_INSET: f64 = STAGE_EDGE_PADDING;
 
 /// Hit-test padding around cast thumbnails.
 const CAST_HIT_PADDING: f64 = 8.;
@@ -583,33 +583,89 @@ pub fn apply<W: LayoutElement>(
     apply_geometry(workspace, config, state);
 }
 
-pub fn strip_width_for_config(config: &StageManagerConfig, monitor_width: f64) -> f64 {
-    let stage_width = monitor_width * config.proportion - STAGE_RIGHT_PADDING;
-    monitor_width - stage_width - STAGE_RIGHT_PADDING
+/// Stack and stage regions derived from config.
+#[derive(Debug, Clone, Copy)]
+struct StageAreas {
+    stack_area: Rectangle<f64, Logical>,
+    stage_area: Rectangle<f64, Logical>,
 }
 
-pub fn pointer_in_strip_area(
+fn compute_areas(
+    working_area: Rectangle<f64, Logical>,
+    config: &StageManagerConfig,
+) -> StageAreas {
+    let loc = working_area.loc;
+    let w = working_area.size.w;
+    let h = working_area.size.h;
+    let pad = STAGE_EDGE_PADDING;
+    let p = config.proportion;
+
+    match config.stack_position {
+        StackPosition::Left => {
+            let stage_w = w * p - pad;
+            let stack_w = w - stage_w - pad;
+            StageAreas {
+                stack_area: Rectangle::new(loc, Size::from((stack_w, h))),
+                stage_area: Rectangle::new(
+                    Point::from((loc.x + stack_w, loc.y)),
+                    Size::from((w - stack_w - pad, h)),
+                ),
+            }
+        }
+        StackPosition::Right => {
+            let stage_w = w * p - pad;
+            let stack_w = w - stage_w - pad;
+            StageAreas {
+                stack_area: Rectangle::new(
+                    Point::from((loc.x + w - stack_w, loc.y)),
+                    Size::from((stack_w, h)),
+                ),
+                stage_area: Rectangle::new(loc, Size::from((w - stack_w - pad, h))),
+            }
+        }
+        StackPosition::Top => {
+            let stage_h = h * p - pad;
+            let stack_h = h - stage_h - pad;
+            StageAreas {
+                stack_area: Rectangle::new(loc, Size::from((w, stack_h))),
+                stage_area: Rectangle::new(
+                    Point::from((loc.x, loc.y + stack_h)),
+                    Size::from((w, h - stack_h - pad)),
+                ),
+            }
+        }
+        StackPosition::Bottom => {
+            let stage_h = h * p - pad;
+            let stack_h = h - stage_h - pad;
+            StageAreas {
+                stack_area: Rectangle::new(
+                    Point::from((loc.x, loc.y + h - stack_h)),
+                    Size::from((w, stack_h)),
+                ),
+                stage_area: Rectangle::new(loc, Size::from((w, h - stack_h - pad))),
+            }
+        }
+    }
+}
+
+pub fn pointer_in_stack_area(
     point: Point<f64, Logical>,
     working_area: Rectangle<f64, Logical>,
-    strip_width: f64,
+    config: &StageManagerConfig,
 ) -> bool {
-    let strip_right = working_area.loc.x + strip_width;
-    point.x >= working_area.loc.x
-        && point.x < strip_right
-        && point.y >= working_area.loc.y
-        && point.y <= working_area.loc.y + working_area.size.h
+    compute_areas(working_area, config)
+        .stack_area
+        .contains(point)
 }
 
 pub fn pointer_in_stage_area(
     point: Point<f64, Logical>,
     working_area: Rectangle<f64, Logical>,
-    strip_width: f64,
+    config: &StageManagerConfig,
 ) -> bool {
-    let stage_left = working_area.loc.x + strip_width;
-    point.x >= stage_left
-        && point.x <= working_area.loc.x + working_area.size.w
-        && point.y >= working_area.loc.y
-        && point.y <= working_area.loc.y + working_area.size.h
+    compute_areas(working_area, config)
+        .stage_area
+        .contains(point)
 }
 
 pub fn strip_drag_end<W: LayoutElement>(
@@ -620,12 +676,11 @@ pub fn strip_drag_end<W: LayoutElement>(
     pointer: Point<f64, Logical>,
 ) -> bool {
     let working_area = workspace.working_area();
-    let strip_w = strip_width_for_config(config, working_area.size.w);
 
-    let changed = if pointer_in_stage_area(pointer, working_area, strip_w) {
+    let changed = if pointer_in_stage_area(pointer, working_area, config) {
         workspace.stage_manager_save_active_sizes();
         state.on_window_dragged_to_stage(workspace, window.clone(), config.max_cast_groups)
-    } else if pointer_in_strip_area(pointer, working_area, strip_w) && state.is_stage_window(window)
+    } else if pointer_in_stack_area(pointer, working_area, config) && state.is_stage_window(window)
     {
         workspace.stage_manager_save_active_sizes();
         state.on_window_dragged_to_cast(workspace, window.clone(), config.max_cast_groups)
@@ -655,9 +710,16 @@ pub fn scroll_cast<W: LayoutElement>(
     }
 
     let working_area = workspace.working_area();
+    let areas = compute_areas(working_area, config);
     let slot_gap = workspace.options.layout.gaps;
-    let content_height = cast_content_height(&state.cast_group_layouts, slot_gap);
-    let max_scroll = (content_height - working_area.size.h).max(0.);
+    let content_extent =
+        cast_content_extent(&state.cast_group_layouts, slot_gap, config.stack_position.is_vertical());
+    let viewport_extent = if config.stack_position.is_vertical() {
+        areas.stack_area.size.h
+    } else {
+        areas.stack_area.size.w
+    };
+    let max_scroll = (content_extent - viewport_extent).max(0.);
 
     let old = state.cast_scroll_offset;
     state.cast_scroll_offset = (state.cast_scroll_offset + delta_y).clamp(0., max_scroll);
@@ -678,9 +740,8 @@ pub fn pointer_motion<W: LayoutElement>(
     point: Point<f64, Logical>,
 ) -> bool {
     let working_area = workspace.working_area();
-    let strip_w = strip_width_for_config(config, working_area.size.w);
 
-    let hovered = if pointer_in_strip_area(point, working_area, strip_w) {
+    let hovered = if pointer_in_stack_area(point, working_area, config) {
         hit_test_cast_groups(point, &state.cast_group_layouts)
     } else {
         None
@@ -786,13 +847,23 @@ pub fn disable<W: LayoutElement>(workspace: &mut Workspace<W>) {
     workspace.scrolling.set_view_offset_for_stage_manager(0.);
 }
 
-fn cast_content_height(layouts: &[CastGroupLayout], slot_gap: f64) -> f64 {
+fn cast_content_extent(
+    layouts: &[CastGroupLayout],
+    slot_gap: f64,
+    vertical: bool,
+) -> f64 {
     if layouts.is_empty() {
         return 0.;
     }
     let total: f64 = layouts
         .iter()
-        .map(|l| l.rect.size.h + slot_gap)
+        .map(|l| {
+            if vertical {
+                l.rect.size.h + slot_gap
+            } else {
+                l.rect.size.w + slot_gap
+            }
+        })
         .sum();
     total - slot_gap
 }
@@ -830,32 +901,23 @@ fn apply_geometry<W: LayoutElement>(
 ) {
     let working_area = workspace.working_area();
     let monitor_width = working_area.size.w;
-    let monitor_height = working_area.size.h;
-
-    let stage_width = monitor_width * config.proportion - STAGE_RIGHT_PADDING;
-    let strip_w = strip_width_for_config(config, monitor_width);
 
     let thumb_width =
         (monitor_width * config.thumb_scale).round().max(1.) as i32;
     let thumb_height = (f64::from(thumb_width) * ASPECT_RATIO).round().max(1.) as i32;
 
+    let areas = compute_areas(working_area, config);
+
     state.cast_group_layouts = apply_cast_strip(
         workspace,
-        working_area,
-        strip_w,
+        config,
+        areas,
         thumb_width,
         thumb_height,
         state,
     );
 
-    apply_stage_geometry(
-        workspace,
-        working_area,
-        strip_w,
-        stage_width,
-        monitor_height,
-        state,
-    );
+    apply_stage_geometry(workspace, areas.stage_area, state);
 
     if let Some(hovered) = state.hovered_cast {
         if let Some(id) = state
@@ -877,8 +939,8 @@ fn apply_geometry<W: LayoutElement>(
 
 fn apply_cast_strip<W: LayoutElement>(
     workspace: &mut Workspace<W>,
-    working_area: Rectangle<f64, Logical>,
-    _strip_width: f64,
+    config: &StageManagerConfig,
+    areas: StageAreas,
     thumb_width: i32,
     thumb_height: i32,
     state: &mut StageManagerState<W>,
@@ -887,49 +949,79 @@ fn apply_cast_strip<W: LayoutElement>(
     let thumb_w = f64::from(thumb_width);
     let thumb_h = f64::from(thumb_height);
     let slot_gap = workspace.options.layout.gaps;
+    let vertical = config.stack_position.is_vertical();
 
-    let x = working_area.loc.x + CAST_STRIP_LEFT_PADDING;
-    let mut y_cursor =
-        working_area.loc.y + slot_gap - state.cast_scroll_offset;
+    let all_groups: Vec<&StageGroup<W>> = state
+        .cast_groups
+        .iter()
+        .chain(state.hidden_groups.iter())
+        .collect();
 
-    for group in &state.cast_groups {
-        y_cursor = layout_cast_group_slot(
-            workspace,
-            thumb_width,
-            thumb_height,
-            thumb_w,
-            thumb_h,
-            x,
-            y_cursor,
-            slot_gap,
-            group,
-            &mut layouts,
-        );
+    if vertical {
+        let thumb_x = match config.stack_position {
+            StackPosition::Left => areas.stack_area.loc.x + STACK_INSET,
+            StackPosition::Right => {
+                areas.stack_area.loc.x + areas.stack_area.size.w - thumb_w - STACK_INSET
+            }
+            _ => unreachable!(),
+        };
+        let mut y_cursor =
+            areas.stack_area.loc.y + slot_gap - state.cast_scroll_offset;
+
+        for group in all_groups {
+            y_cursor = layout_cast_group_slot(
+                workspace,
+                thumb_width,
+                thumb_height,
+                thumb_w,
+                thumb_h,
+                thumb_x,
+                y_cursor,
+                slot_gap,
+                group,
+                &mut layouts,
+            );
+        }
+    } else {
+        let thumb_y = match config.stack_position {
+            StackPosition::Top => areas.stack_area.loc.y + STACK_INSET,
+            StackPosition::Bottom => {
+                areas.stack_area.loc.y + areas.stack_area.size.h - thumb_h - STACK_INSET
+            }
+            _ => unreachable!(),
+        };
+        let mut x_cursor =
+            areas.stack_area.loc.x + slot_gap - state.cast_scroll_offset;
+
+        for group in all_groups {
+            x_cursor = layout_cast_group_slot_horizontal(
+                workspace,
+                thumb_width,
+                thumb_height,
+                thumb_w,
+                thumb_h,
+                x_cursor,
+                thumb_y,
+                slot_gap,
+                group,
+                &mut layouts,
+            );
+        }
     }
 
-    for group in &state.hidden_groups {
-        y_cursor = layout_cast_group_slot(
-            workspace,
-            thumb_width,
-            thumb_height,
-            thumb_w,
-            thumb_h,
-            x,
-            y_cursor,
-            slot_gap,
-            group,
-            &mut layouts,
-        );
-    }
-
-    let content_height = cast_content_height(&layouts, slot_gap);
-    let max_scroll = (content_height - working_area.size.h).max(0.);
+    let content_extent = cast_content_extent(&layouts, slot_gap, vertical);
+    let viewport_extent = if vertical {
+        areas.stack_area.size.h
+    } else {
+        areas.stack_area.size.w
+    };
+    let max_scroll = (content_extent - viewport_extent).max(0.);
     state.cast_scroll_offset = state.cast_scroll_offset.clamp(0., max_scroll);
 
     layouts
 }
 
-/// Lay out one cast slot: front window on top, siblings stacked at the same position.
+/// Lay out one cast slot in a vertical stack: front window on top, siblings stacked inert.
 fn layout_cast_group_slot<W: LayoutElement>(
     workspace: &mut Workspace<W>,
     thumb_width: i32,
@@ -965,6 +1057,42 @@ fn layout_cast_group_slot<W: LayoutElement>(
     y_cursor + thumb_h + slot_gap
 }
 
+/// Lay out one cast slot in a horizontal stack.
+fn layout_cast_group_slot_horizontal<W: LayoutElement>(
+    workspace: &mut Workspace<W>,
+    thumb_width: i32,
+    thumb_height: i32,
+    thumb_w: f64,
+    thumb_h: f64,
+    x_cursor: f64,
+    y: f64,
+    slot_gap: f64,
+    group: &StageGroup<W>,
+    layouts: &mut Vec<CastGroupLayout>,
+) -> f64 {
+    let pos = Point::from((x_cursor, y));
+    let rect = Rectangle::new(pos, Size::from((thumb_w, thumb_h)));
+
+    if let Some(front) = group.windows.first() {
+        move_to_floating(workspace, front);
+        if !workspace.floating.has_window(front) {
+            return x_cursor;
+        }
+
+        set_strip_thumb_geometry(workspace, front, thumb_width, thumb_height, pos);
+        for id in group.windows.iter().skip(1) {
+            move_to_floating(workspace, id);
+            if workspace.floating.has_window(id) {
+                workspace.floating.set_stage_manager_strip_inert(id);
+            }
+        }
+        workspace.floating.raise_to_top(front);
+    }
+
+    layouts.push(CastGroupLayout { rect });
+    x_cursor + thumb_w + slot_gap
+}
+
 fn set_strip_thumb_geometry<W: LayoutElement>(
     workspace: &mut Workspace<W>,
     id: &W::Id,
@@ -982,10 +1110,7 @@ fn set_strip_thumb_geometry<W: LayoutElement>(
 
 fn apply_stage_geometry<W: LayoutElement>(
     workspace: &mut Workspace<W>,
-    working_area: Rectangle<f64, Logical>,
-    strip_width: f64,
-    _stage_width: f64,
-    monitor_height: f64,
+    stage_area: Rectangle<f64, Logical>,
     state: &StageManagerState<W>,
 ) {
     let Some(group) = &state.active_group else {
@@ -1000,9 +1125,10 @@ fn apply_stage_geometry<W: LayoutElement>(
 
     let gap = workspace.options.layout.gaps;
     let total_gap = gap * (n.saturating_sub(1)) as f64;
-    let stage_left = working_area.loc.x + strip_width;
-    let stage_right = working_area.loc.x + working_area.size.w - STAGE_RIGHT_PADDING;
-    let stage_inner_width = (stage_right - stage_left).max(1.);
+    let stage_left = stage_area.loc.x;
+    let stage_right = stage_area.loc.x + stage_area.size.w;
+    let stage_inner_width = stage_area.size.w.max(1.);
+    let stage_inner_height = stage_area.size.h;
     let slot_width = (stage_inner_width - total_gap) / n as f64;
 
     for (i, id) in windows.iter().enumerate() {
@@ -1020,12 +1146,12 @@ fn apply_stage_geometry<W: LayoutElement>(
         };
 
         let saved = workspace.floating.stage_manager_saved_size(id);
-        let mut size = resolve_stage_window_size(saved, window_width, monitor_height);
+        let mut size = resolve_stage_window_size(saved, window_width, stage_inner_height);
         if saved.is_none() {
             // First time on main: fill to the right edge. Restored windows keep saved width.
             size.w = window_width.round().max(1.) as i32;
         }
-        let y = working_area.loc.y + (monitor_height - f64::from(size.h)) / 2.;
+        let y = stage_area.loc.y + (stage_inner_height - f64::from(size.h)) / 2.;
         set_stage_window_geometry(workspace, id, size, Point::from((x, y)));
     }
 }
