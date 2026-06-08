@@ -107,7 +107,11 @@ pub struct StageManagerState<W: LayoutElement> {
     /// Cached layout for pointer hit-testing.
     pub cast_group_layouts: Vec<CastGroupLayout>,
     /// Windows just added to the cast strip; skip promoting them on the first focus request.
+    ///
+    /// Also used to defer promotion while another stage window is being interactively moved.
     new_cast_windows: Vec<W::Id>,
+    /// Stage window temporarily removed from the layout during an interactive move.
+    interactive_move_stage: Option<W::Id>,
 }
 
 impl<W: LayoutElement> StageManagerState<W> {
@@ -122,7 +126,32 @@ impl<W: LayoutElement> StageManagerState<W> {
             interaction_since: None,
             cast_group_layouts: Vec::new(),
             new_cast_windows: Vec::new(),
+            interactive_move_stage: None,
         }
+    }
+
+    pub fn begin_interactive_move_stage(&mut self, id: W::Id) {
+        self.interactive_move_stage = Some(id);
+        self.clear_auto_use_as_main_timer();
+        self.clear_pointer_hover();
+    }
+
+    pub fn end_interactive_move_stage(&mut self) {
+        self.interactive_move_stage = None;
+        self.clear_auto_use_as_main_timer();
+    }
+
+    pub fn is_interactive_move_of(&self, id: &W::Id) -> bool {
+        self.interactive_move_stage.as_ref() == Some(id)
+    }
+
+    fn should_defer_promote(&self, id: &W::Id) -> bool {
+        self.new_cast_windows.iter().any(|w| w == id)
+    }
+
+    fn defer_promote(&mut self, id: W::Id) {
+        self.new_cast_windows.retain(|w| w != &id);
+        self.new_cast_windows.push(id);
     }
 
     pub fn auto_use_as_main_timer_active(&self, config: &StageManagerConfig) -> bool {
@@ -132,6 +161,10 @@ impl<W: LayoutElement> StageManagerState<W> {
     pub fn clear_auto_use_as_main_timer(&mut self) {
         self.interaction_target = None;
         self.interaction_since = None;
+    }
+
+    pub fn clear_pointer_hover(&mut self) {
+        self.hovered_cast = None;
     }
 
     fn cast_index_for(&self, id: &W::Id) -> Option<usize> {
@@ -224,6 +257,10 @@ impl<W: LayoutElement> StageManagerState<W> {
     }
 
     pub fn on_window_removed(&mut self, id: &W::Id, max_cast: usize) {
+        if self.interactive_move_stage.as_ref() == Some(id) {
+            return;
+        }
+
         self.new_cast_windows.retain(|w| w != id);
         if let Some(group) = &mut self.active_group {
             if group.remove(id) && group.windows.is_empty() {
@@ -258,13 +295,19 @@ impl<W: LayoutElement> StageManagerState<W> {
         id: &W::Id,
         max_cast: usize,
     ) -> bool {
-
         if self.is_stage_window(id) {
             return false;
         }
 
-        if self.new_cast_windows.iter().any(|w| w == id) {
-            self.new_cast_windows.retain(|w| w != id);
+        let target_id = self.cast_group_front_for(id).unwrap_or_else(|| id.clone());
+
+        if self.interactive_move_stage.is_some() && self.is_cast_window(&target_id) {
+            self.defer_promote(target_id);
+            return false;
+        }
+
+        if self.should_defer_promote(&target_id) {
+            self.new_cast_windows.retain(|w| w != &target_id);
             return false;
         }
 
@@ -376,7 +419,7 @@ impl<W: LayoutElement> StageManagerState<W> {
     /// Drag a cast window onto the stage: merge into the active group (max 2 on stage).
     pub fn on_window_dragged_to_stage(
         &mut self,
-        workspace: &Workspace<W>,
+        workspace: &mut Workspace<W>,
         id: W::Id,
         max_cast: usize,
     ) -> bool {
@@ -400,6 +443,7 @@ impl<W: LayoutElement> StageManagerState<W> {
         }
 
         for win in demoted {
+            workspace.floating.park_stage_position_for_cast(&win);
             let key = workspace.window_stack_group_key(&win);
             self.insert_into_cast(workspace, win, key);
         }
@@ -418,6 +462,8 @@ impl<W: LayoutElement> StageManagerState<W> {
         if !self.is_stage_window(&id) {
             return false;
         }
+
+        workspace.floating.park_stage_position_for_cast(&id);
 
         if let Some(active) = &mut self.active_group {
             active.remove(&id);
@@ -497,6 +543,7 @@ impl<W: LayoutElement> StageManagerState<W> {
         Self::remove_from_group_list(&mut self.cast_groups, &id);
         Self::remove_from_group_list(&mut self.hidden_groups, &id);
 
+        workspace.floating.restore_stage_saved_position(&id);
         self.active_group = Some(StageGroup::new(id));
         self.enforce_cast_limit(max_cast);
     }
@@ -523,9 +570,10 @@ impl<W: LayoutElement> StageManagerState<W> {
         }
     }
 
-    fn demote_active_to_cast(&mut self, workspace: &Workspace<W>) {
+    fn demote_active_to_cast(&mut self, workspace: &mut Workspace<W>) {
         if let Some(group) = self.active_group.take() {
             for win in group.windows {
+                workspace.floating.park_stage_position_for_cast(&win);
                 let key = workspace.window_stack_group_key(&win);
                 self.insert_into_cast(workspace, win, key);
             }
@@ -888,6 +936,10 @@ pub fn tick_auto_use_as_main<W: LayoutElement>(
         return changed;
     }
 
+    if state.should_defer_promote(&id) {
+        return changed;
+    }
+
     workspace.stage_manager_save_active_sizes();
     state.set_stage_single(workspace, id, config.max_cast_groups);
     state.interaction_target = None;
@@ -1186,7 +1238,9 @@ fn layout_cast_group_slot<W: LayoutElement>(
             return y_cursor;
         }
 
-        set_strip_thumb_geometry(workspace, front, thumb_width, thumb_height, pos);
+        if !workspace.floating.has_user_position(front) {
+            set_strip_thumb_geometry(workspace, front, thumb_width, thumb_height, pos);
+        }
         for id in group.windows.iter().skip(1) {
             move_to_floating(workspace, id);
             if workspace.floating.has_window(id) {
@@ -1222,7 +1276,9 @@ fn layout_cast_group_slot_horizontal<W: LayoutElement>(
             return x_cursor;
         }
 
-        set_strip_thumb_geometry(workspace, front, thumb_width, thumb_height, pos);
+        if !workspace.floating.has_user_position(front) {
+            set_strip_thumb_geometry(workspace, front, thumb_width, thumb_height, pos);
+        }
         for id in group.windows.iter().skip(1) {
             move_to_floating(workspace, id);
             if workspace.floating.has_window(id) {
@@ -1294,6 +1350,10 @@ fn apply_stage_geometry<W: LayoutElement>(
             // First time on main: fill to the right edge. Restored windows keep saved width.
             size.w = window_width.round().max(1.) as i32;
         }
+        if workspace.floating.has_user_position(id) {
+            continue;
+        }
+
         let y = stage_area.loc.y + (stage_inner_height - f64::from(size.h)) / 2.;
         set_stage_window_geometry(workspace, id, size, Point::from((x, y)));
     }
@@ -1342,6 +1402,7 @@ fn set_stage_window_geometry<W: LayoutElement>(
     size: Size<i32, Logical>,
     pos: Point<f64, Logical>,
 ) {
+    workspace.floating.clear_user_position(id);
     workspace.floating.clear_stage_manager_thumb(id);
     workspace
         .floating

@@ -131,6 +131,9 @@ pub struct Tile<W: LayoutElement> {
     /// Remembered stage size for Stage Manager (survives strip ↔ stage moves).
     stage_manager_saved_size: Option<Size<i32, Logical>>,
 
+    /// Remembered stage position for Stage Manager (survives strip ↔ stage moves).
+    stage_manager_saved_pos: Option<Point<f64, SizeFrac>>,
+
     /// Parked off-screen: not rendered and not hit-tested (cast group siblings).
     stage_manager_strip_inert: bool,
 }
@@ -240,6 +243,7 @@ impl<W: LayoutElement> Tile<W> {
             options,
             stage_manager_thumb: None,
             stage_manager_saved_size: None,
+            stage_manager_saved_pos: None,
             stage_manager_strip_inert: false,
         }
     }
@@ -268,6 +272,14 @@ impl<W: LayoutElement> Tile<W> {
 
     pub fn stage_manager_saved_size(&self) -> Option<Size<i32, Logical>> {
         self.stage_manager_saved_size
+    }
+
+    pub fn set_stage_manager_saved_pos(&mut self, pos: Option<Point<f64, SizeFrac>>) {
+        self.stage_manager_saved_pos = pos;
+    }
+
+    pub fn stage_manager_saved_pos(&self) -> Option<Point<f64, SizeFrac>> {
+        self.stage_manager_saved_pos
     }
 
     pub fn update_config(

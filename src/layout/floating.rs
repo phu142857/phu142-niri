@@ -523,19 +523,31 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     pub fn remove_tile(&mut self, id: &W::Id) -> RemovedTile<W> {
-        let idx = self.idx_of(id).unwrap();
-        self.remove_tile_by_idx(idx)
+        self.remove_tile_inner(id, false)
     }
 
-    fn remove_tile_by_idx(&mut self, idx: usize) -> RemovedTile<W> {
+    pub fn remove_tile_for_interactive_move(&mut self, id: &W::Id) -> RemovedTile<W> {
+        self.remove_tile_inner(id, true)
+    }
+
+    fn remove_tile_inner(&mut self, id: &W::Id, for_interactive_move: bool) -> RemovedTile<W> {
+        let idx = self.idx_of(id).unwrap();
+        self.remove_tile_by_idx(idx, for_interactive_move)
+    }
+
+    fn remove_tile_by_idx(&mut self, idx: usize, for_interactive_move: bool) -> RemovedTile<W> {
         let mut tile = self.tiles.remove(idx);
         let data = self.data.remove(idx);
 
         if self.tiles.is_empty() {
             self.active_window_id = None;
         } else if Some(tile.window().id()) == self.active_window_id.as_ref() {
-            // The active tile was removed, make the topmost tile active.
-            self.active_window_id = Some(self.tiles[0].window().id().clone());
+            if for_interactive_move {
+                self.active_window_id = None;
+            } else {
+                // The active tile was removed, make the topmost tile active.
+                self.active_window_id = Some(self.tiles[0].window().id().clone());
+            }
         }
 
         // Stop interactive resize.
@@ -579,6 +591,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let tile_size = tile.tile_size();
 
         self.start_close_animation_for_tile(renderer, snapshot, tile_size, tile_pos, blocker);
+    }
+
+    /// Clear the active window without picking a replacement.
+    ///
+    /// Used when the active tile is removed for an interactive move so focus does not jump to
+    /// another floating window (e.g. a stage-manager cast thumbnail).
+    pub fn clear_active_window(&mut self) {
+        self.active_window_id = None;
     }
 
     pub fn activate_window_without_raising(&mut self, id: &W::Id) -> bool {
@@ -962,6 +982,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
             self.data[idx].set_logical_pos(new_pos);
         }
 
+        let id = self.tiles[idx].window().id().clone();
+        self.mark_user_position(&id);
+
         self.interactive_resize_end(None);
     }
 
@@ -1131,6 +1154,59 @@ impl<W: LayoutElement> FloatingSpace<W> {
         };
         self.data[idx].set_logical_pos(logical_pos);
         true
+    }
+
+    /// Whether the user has manually positioned this floating tile.
+    pub fn has_user_position(&self, id: &W::Id) -> bool {
+        let Some(idx) = self.idx_of(id) else {
+            return false;
+        };
+        self.tiles[idx].floating_pos.is_some()
+            || self.tiles[idx].interactive_move_offset != Point::from((0., 0.))
+    }
+
+    pub fn mark_user_position(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        let pos = self.data[idx].logical_pos;
+        let frac = self.logical_to_size_frac(pos);
+        self.tiles[idx].floating_pos = Some(frac);
+        self.tiles[idx].set_stage_manager_saved_pos(Some(frac));
+    }
+
+    /// Save the current main-stage position and clear manual placement so cast layout can run.
+    pub fn park_stage_position_for_cast(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        let frac = self.logical_to_size_frac(self.data[idx].logical_pos);
+        self.tiles[idx].set_stage_manager_saved_pos(Some(frac));
+        self.tiles[idx].floating_pos = None;
+        self.clear_stage_manager_thumb(id);
+    }
+
+    /// Restore a previously saved main-stage position after promotion from the cast strip.
+    pub fn restore_stage_saved_position(&mut self, id: &W::Id) -> bool {
+        let Some(idx) = self.idx_of(id) else {
+            return false;
+        };
+        let Some(frac) = self.tiles[idx].stage_manager_saved_pos() else {
+            return false;
+        };
+        self.tiles[idx].floating_pos = Some(frac);
+        self.clear_stage_manager_thumb(id);
+        let logical = self.scale_by_working_area(frac);
+        self.data[idx].set_logical_pos(logical);
+        self.data[idx].update(&self.tiles[idx]);
+        true
+    }
+
+    pub fn clear_user_position(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        self.tiles[idx].floating_pos = None;
     }
 
     /// Position a strip thumbnail and draw it at [tile_size] via downscaling, without resizing the

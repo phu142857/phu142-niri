@@ -420,9 +420,14 @@ impl<W: LayoutElement> Workspace<W> {
         }
         self.stage_manager_suppress_auto_use_as_main = suppress;
         if suppress {
-            if let Some(state) = &mut self.stage_manager {
-                state.clear_auto_use_as_main_timer();
-            }
+            self.stage_manager_clear_interaction();
+        }
+    }
+
+    pub(super) fn stage_manager_clear_interaction(&mut self) {
+        if let Some(state) = &mut self.stage_manager {
+            state.clear_pointer_hover();
+            state.clear_auto_use_as_main_timer();
         }
     }
 
@@ -866,10 +871,34 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn remove_tile(&mut self, id: &W::Id, transaction: Transaction) -> RemovedTile<W> {
+        self.remove_tile_inner(id, transaction, false)
+    }
+
+    pub fn remove_tile_for_interactive_move(
+        &mut self,
+        id: &W::Id,
+        transaction: Transaction,
+    ) -> RemovedTile<W> {
+        if let Some(state) = &mut self.stage_manager {
+            state.begin_interactive_move_stage(id.clone());
+        }
+        self.remove_tile_inner(id, transaction, true)
+    }
+
+    fn remove_tile_inner(
+        &mut self,
+        id: &W::Id,
+        transaction: Transaction,
+        for_interactive_move: bool,
+    ) -> RemovedTile<W> {
         let mut from_floating = false;
         let removed = if self.floating.has_window(id) {
             from_floating = true;
-            self.floating.remove_tile(id)
+            if for_interactive_move {
+                self.floating.remove_tile_for_interactive_move(id)
+            } else {
+                self.floating.remove_tile(id)
+            }
         } else {
             self.scrolling.remove_tile(id, transaction)
         };
@@ -891,10 +920,22 @@ impl<W: LayoutElement> Workspace<W> {
             if let Some(state) = &mut self.stage_manager {
                 state.on_window_removed(id, max_cast);
             }
-            self.apply_stage_manager_layout();
+            let skip_layout = self
+                .stage_manager
+                .as_ref()
+                .is_some_and(|state| state.is_interactive_move_of(id));
+            if !skip_layout {
+                self.apply_stage_manager_layout();
+            }
         }
 
         removed
+    }
+
+    pub(super) fn stage_manager_end_interactive_move(&mut self) {
+        if let Some(state) = &mut self.stage_manager {
+            state.end_interactive_move_stage();
+        }
     }
 
     pub fn remove_active_tile(&mut self, transaction: Transaction) -> Option<RemovedTile<W>> {

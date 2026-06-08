@@ -760,7 +760,8 @@ impl State {
 
         let mods = self.niri.seat.get_keyboard().unwrap().modifier_state();
         let suppress = modifiers_from_state(mods).contains(mod_key.to_modifiers())
-            || self.niri.window_mru_ui.is_open();
+            || self.niri.window_mru_ui.is_open()
+            || self.niri.layout.is_interactive_move_active();
         self.niri
             .layout
             .set_stage_manager_suppress_auto_use_as_main(suppress);

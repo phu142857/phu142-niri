@@ -1127,6 +1127,23 @@ impl<W: LayoutElement> Layout<W> {
         window: &W::Id,
         transaction: Transaction,
     ) -> Option<RemovedTile<W>> {
+        self.remove_window_inner(window, transaction, false)
+    }
+
+    fn remove_window_for_interactive_move(
+        &mut self,
+        window: &W::Id,
+        transaction: Transaction,
+    ) -> Option<RemovedTile<W>> {
+        self.remove_window_inner(window, transaction, true)
+    }
+
+    fn remove_window_inner(
+        &mut self,
+        window: &W::Id,
+        transaction: Transaction,
+        for_interactive_move: bool,
+    ) -> Option<RemovedTile<W>> {
         if let Some(state) = &self.interactive_move {
             match state {
                 InteractiveMoveState::Starting { window_id, .. } => {
@@ -1172,7 +1189,11 @@ impl<W: LayoutElement> Layout<W> {
                 for mon in monitors {
                     for (idx, ws) in mon.workspaces.iter_mut().enumerate() {
                         if ws.has_window(window) {
-                            let removed = ws.remove_tile(window, transaction);
+                            let removed = if for_interactive_move {
+                                ws.remove_tile_for_interactive_move(window, transaction)
+                            } else {
+                                ws.remove_tile(window, transaction)
+                            };
 
                             // Clean up empty workspaces that are not active and not last.
                             if !ws.has_windows_or_name()
@@ -1206,7 +1227,11 @@ impl<W: LayoutElement> Layout<W> {
             MonitorSet::NoOutputs { workspaces, .. } => {
                 for (idx, ws) in workspaces.iter_mut().enumerate() {
                     if ws.has_window(window) {
-                        let removed = ws.remove_tile(window, transaction);
+                        let removed = if for_interactive_move {
+                            ws.remove_tile_for_interactive_move(window, transaction)
+                        } else {
+                            ws.remove_tile(window, transaction)
+                        };
 
                         // Clean up empty workspaces.
                         if !ws.has_windows_or_name() {
@@ -1529,9 +1554,22 @@ impl<W: LayoutElement> Layout<W> {
         ws_idx == mon.active_workspace_idx
     }
 
+    pub fn is_interactive_move_active(&self) -> bool {
+        matches!(
+            self.interactive_move,
+            Some(InteractiveMoveState::Starting { .. }) | Some(InteractiveMoveState::Moving(_))
+        )
+    }
+
     pub fn activate_window(&mut self, window: &W::Id) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
-            if move_.tile.window().id() == window {
+            if move_.tile.window().id() != window {
+                return;
+            }
+        } else if let Some(InteractiveMoveState::Starting { window_id, .. }) =
+            &self.interactive_move
+        {
+            if window_id != window {
                 return;
             }
         }
@@ -1567,7 +1605,13 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn activate_window_without_raising(&mut self, window: &W::Id) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
-            if move_.tile.window().id() == window {
+            if move_.tile.window().id() != window {
+                return;
+            }
+        } else if let Some(InteractiveMoveState::Starting { window_id, .. }) =
+            &self.interactive_move
+        {
+            if window_id != window {
                 return;
             }
         }
@@ -1799,6 +1843,9 @@ impl<W: LayoutElement> Layout<W> {
         output: &Output,
         point: Point<f64, Logical>,
     ) -> bool {
+        if self.is_interactive_move_active() {
+            return false;
+        }
         if self.options.layout.stage_manager.is_none() {
             return false;
         }
@@ -4103,7 +4150,9 @@ impl<W: LayoutElement> Layout<W> {
                     width,
                     is_full_width,
                     is_floating,
-                } = self.remove_window(window, Transaction::new()).unwrap();
+                } = self
+                    .remove_window_for_interactive_move(window, Transaction::new())
+                    .unwrap();
 
                 tile.stop_move_animations();
                 tile.interactive_move_offset = Point::from((0., 0.));
@@ -4336,6 +4385,10 @@ impl<W: LayoutElement> Layout<W> {
             unreachable!()
         };
 
+        for ws in self.workspaces_mut() {
+            ws.stage_manager_end_interactive_move();
+        }
+
         for mon in self.monitors_mut() {
             mon.dnd_scroll_gesture_end();
         }
@@ -4356,6 +4409,9 @@ impl<W: LayoutElement> Layout<W> {
 
         // Dragging in the overview shouldn't switch the workspace and so on.
         let allow_to_activate_workspace = !self.overview_open;
+
+        let win_id = move_.tile.window().id().clone();
+        let pointer_pos_within_output = move_.pointer_pos_within_output;
 
         match &mut self.monitor_set {
             MonitorSet::Normal {
@@ -4416,7 +4472,6 @@ impl<W: LayoutElement> Layout<W> {
                         (mon, insert_ws, position, Some(ws_geo.loc), zoom)
                     };
 
-                let win_id = move_.tile.window().id().clone();
                 let tile_render_loc = move_.tile_render_location(zoom);
 
                 let ws_idx = match insert_ws {
@@ -4544,6 +4599,14 @@ impl<W: LayoutElement> Layout<W> {
                     move_.is_full_width,
                     move_.is_floating,
                 );
+            }
+        }
+
+        if self.options.layout.stage_manager.is_some() {
+            for ws in self.workspaces_mut() {
+                if ws.has_window(&win_id) {
+                    ws.stage_manager_strip_drag_end(&win_id, pointer_pos_within_output);
+                }
             }
         }
     }
