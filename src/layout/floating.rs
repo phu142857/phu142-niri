@@ -395,6 +395,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.idx_of(id).is_some()
     }
 
+    pub fn active_window_id(&self) -> Option<&W::Id> {
+        self.active_window_id.as_ref()
+    }
+
     pub fn active_window(&self) -> Option<&W> {
         let id = self.active_window_id.as_ref()?;
         self.tiles
@@ -851,28 +855,48 @@ impl<W: LayoutElement> FloatingSpace<W> {
         win.request_size_once(win_size, animate);
     }
 
+    fn find_directional(
+        &self,
+        active_id: &W::Id,
+        distance: impl Fn(Point<f64, Logical>, Point<f64, Logical>) -> f64,
+        allowed: Option<&[W::Id]>,
+    ) -> Option<W::Id> {
+        let active_idx = self.idx_of(active_id)?;
+        let center = self.data[active_idx].center();
+
+        zip(&self.tiles, &self.data)
+            .filter(|(tile, _)| {
+                let id = tile.window().id();
+                id != active_id
+                    && allowed.is_none_or(|allowed| allowed.iter().any(|allowed_id| allowed_id == id))
+            })
+            .map(|(tile, data)| (tile, distance(center, data.center())))
+            .filter(|(_, dist)| *dist > 0.)
+            .min_by(|(_, dist_a), (_, dist_b)| f64::total_cmp(dist_a, dist_b))
+            .map(|(tile, _)| tile.window().id().clone())
+    }
+
     fn focus_directional(
         &mut self,
         distance: impl Fn(Point<f64, Logical>, Point<f64, Logical>) -> f64,
     ) -> bool {
-        let Some(active_id) = &self.active_window_id else {
+        let Some(active_id) = self.active_window_id.clone() else {
             return false;
         };
-        let active_idx = self.idx_of(active_id).unwrap();
-        let center = self.data[active_idx].center();
+        let Some(id) = self.find_directional(&active_id, distance, None) else {
+            return false;
+        };
+        self.activate_window(&id);
+        true
+    }
 
-        let result = zip(&self.tiles, &self.data)
-            .filter(|(tile, _)| tile.window().id() != active_id)
-            .map(|(tile, data)| (tile, distance(center, data.center())))
-            .filter(|(_, dist)| *dist > 0.)
-            .min_by(|(_, dist_a), (_, dist_b)| f64::total_cmp(dist_a, dist_b));
-        if let Some((tile, _)) = result {
-            let id = tile.window().id().clone();
-            self.activate_window(&id);
-            true
-        } else {
-            false
-        }
+    pub fn find_directional_among(
+        &self,
+        active_id: &W::Id,
+        allowed: &[W::Id],
+        distance: impl Fn(Point<f64, Logical>, Point<f64, Logical>) -> f64,
+    ) -> Option<W::Id> {
+        self.find_directional(active_id, distance, Some(allowed))
     }
 
     pub fn focus_left(&mut self) -> bool {

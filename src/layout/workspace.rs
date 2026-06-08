@@ -1052,6 +1052,9 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_left(&mut self) -> bool {
+        if self.stage_manager_try_focus_neighbor(super::stage_manager::FocusDirection::Left) {
+            return true;
+        }
         let changed = if self.floating_is_active.get() {
             self.floating.focus_left()
         } else {
@@ -1064,6 +1067,9 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_right(&mut self) -> bool {
+        if self.stage_manager_try_focus_neighbor(super::stage_manager::FocusDirection::Right) {
+            return true;
+        }
         let changed = if self.floating_is_active.get() {
             self.floating.focus_right()
         } else {
@@ -1120,6 +1126,9 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_down(&mut self) -> bool {
+        if self.stage_manager_try_focus_neighbor(super::stage_manager::FocusDirection::Down) {
+            return true;
+        }
         let changed = if self.floating_is_active.get() {
             self.floating.focus_down()
         } else {
@@ -1132,6 +1141,9 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_up(&mut self) -> bool {
+        if self.stage_manager_try_focus_neighbor(super::stage_manager::FocusDirection::Up) {
+            return true;
+        }
         let changed = if self.floating_is_active.get() {
             self.floating.focus_up()
         } else {
@@ -2324,6 +2336,25 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub(super) fn set_floating_inactive(&mut self) {
         self.floating_is_active = FloatingActive::No;
+    }
+
+    fn stage_manager_try_focus_neighbor(
+        &mut self,
+        direction: super::stage_manager::FocusDirection,
+    ) -> bool {
+        let Some(config) = self.options.layout.stage_manager.clone() else {
+            return false;
+        };
+        let Some(state) = self.stage_manager.as_ref() else {
+            return false;
+        };
+        let Some(id) = super::stage_manager::try_focus_neighbor(self, state, &config, direction)
+        else {
+            return false;
+        };
+        self.floating.activate_window(&id);
+        self.stage_manager_follow_focus();
+        true
     }
 
     fn stage_manager_follow_focus(&mut self) {

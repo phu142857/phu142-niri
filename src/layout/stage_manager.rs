@@ -36,6 +36,15 @@ const STACK_SCROLL_MOUSE_FACTOR: f64 = 3.0;
 /// Maximum windows shown on stage after explicit drag-merge.
 const MAX_PARALLEL_STAGE: usize = 2;
 
+/// Directional focus request from keyboard navigation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
 /// A group of windows sharing a cast stack slot (typically same app).
 #[derive(Debug)]
 pub struct StageGroup<W: LayoutElement> {
@@ -651,6 +660,72 @@ fn compute_areas(
     }
 }
 
+fn cast_stack_window_ids<W: LayoutElement>(state: &StageManagerState<W>) -> Vec<W::Id> {
+    state
+        .cast_groups
+        .iter()
+        .chain(state.hidden_groups.iter())
+        .filter_map(|group| group.windows.first().cloned())
+        .collect()
+}
+
+fn focus_cast_stack_neighbor<W: LayoutElement>(
+    state: &StageManagerState<W>,
+    config: &StageManagerConfig,
+    current: &W::Id,
+    direction: FocusDirection,
+) -> Option<W::Id> {
+    let target_id = state.cast_group_front_for(current).unwrap_or_else(|| current.clone());
+    let windows = cast_stack_window_ids(state);
+    let idx = windows.iter().position(|id| id == &target_id)?;
+
+    let delta = match (config.stack_position, direction) {
+        (StackPosition::Left | StackPosition::Right, FocusDirection::Up) => -1,
+        (StackPosition::Left | StackPosition::Right, FocusDirection::Down) => 1,
+        (StackPosition::Top | StackPosition::Bottom, FocusDirection::Left) => -1,
+        (StackPosition::Top | StackPosition::Bottom, FocusDirection::Right) => 1,
+        _ => return None,
+    };
+
+    let new_idx = idx.checked_add_signed(delta)?;
+    windows.get(new_idx).cloned()
+}
+
+/// Try stage-manager-specific focus moves that keep stack navigation off the main stage.
+pub fn try_focus_neighbor<W: LayoutElement>(
+    workspace: &Workspace<W>,
+    state: &StageManagerState<W>,
+    config: &StageManagerConfig,
+    direction: FocusDirection,
+) -> Option<W::Id> {
+    let active = workspace.active_window()?.id();
+
+    if state.is_cast_window(active) {
+        return focus_cast_stack_neighbor(state, config, active, direction);
+    }
+
+    if state.is_stage_window(active) {
+        let allowed = state.active_windows();
+        let distance = match direction {
+            FocusDirection::Up => {
+                |focus: Point<f64, Logical>, other: Point<f64, Logical>| focus.y - other.y
+            }
+            FocusDirection::Down => {
+                |focus: Point<f64, Logical>, other: Point<f64, Logical>| other.y - focus.y
+            }
+            FocusDirection::Left => {
+                |focus: Point<f64, Logical>, other: Point<f64, Logical>| focus.x - other.x
+            }
+            FocusDirection::Right => {
+                |focus: Point<f64, Logical>, other: Point<f64, Logical>| other.x - focus.x
+            }
+        };
+        return workspace.floating.find_directional_among(active, &allowed, distance);
+    }
+
+    None
+}
+
 pub fn pointer_in_stack_area(
     point: Point<f64, Logical>,
     working_area: Rectangle<f64, Logical>,
@@ -983,17 +1058,21 @@ fn apply_geometry<W: LayoutElement>(
 
     apply_stage_geometry(workspace, areas.stage_area, state);
 
-    if let Some(hovered) = state.hovered_cast {
+    if let Some(active) = workspace.active_window().map(|w| w.id().clone()) {
+        if state.is_cast_window(&active) {
+            workspace.floating.raise_to_top(&active);
+        } else if state.is_stage_window(&active) {
+            if let Some(group) = &state.active_group {
+                for id in &group.windows {
+                    workspace.floating.raise_to_top(id);
+                }
+            }
+        }
+    } else if let Some(hovered) = state.hovered_cast {
         if let Some(id) = state
             .group_at_layout_index(hovered)
             .and_then(|g| g.windows.first())
         {
-            workspace.floating.raise_to_top(id);
-        }
-    }
-
-    if let Some(group) = &state.active_group {
-        for id in &group.windows {
             workspace.floating.raise_to_top(id);
         }
     }
