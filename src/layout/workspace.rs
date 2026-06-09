@@ -702,8 +702,17 @@ impl<W: LayoutElement> Workspace<W> {
         let window_id = tile.window().id().clone();
         let stage_manager_active = self.options.layout.stage_manager.is_some();
 
+        let is_stage_dialog = stage_manager_active
+            && self
+                .stage_manager
+                .as_ref()
+                .is_some_and(|state| state.is_stage_child_of_active(self, &window_id));
+
         // New windows join the cast strip; keep the current stage window focused.
-        let activate = if stage_manager_active
+        // Dialogs parented to a stage window are an exception: focus them on the stage.
+        let activate = if is_stage_dialog {
+            ActivateWindow::Yes
+        } else if stage_manager_active
             && self.stage_manager.as_ref().is_some_and(|state| {
                 state.active_group.is_some()
                     || !state.cast_groups.is_empty()
@@ -816,6 +825,9 @@ impl<W: LayoutElement> Workspace<W> {
             if on_stage {
                 self.stage_manager_save_active_sizes();
                 self.floating_is_active = FloatingActive::Yes;
+                if is_stage_dialog {
+                    self.activate_window(&window_id);
+                }
             } else if let Some(stage_id) = self
                 .stage_manager
                 .as_ref()
@@ -917,8 +929,15 @@ impl<W: LayoutElement> Workspace<W> {
                 .as_ref()
                 .map(|c| c.max_cast_groups)
                 .unwrap_or(6);
-            if let Some(state) = &mut self.stage_manager {
-                state.on_window_removed(id, max_cast);
+            let restore_parent = if let Some(mut state) = self.stage_manager.take() {
+                let restore = state.on_window_removed(self, id, max_cast);
+                self.stage_manager = Some(state);
+                restore
+            } else {
+                None
+            };
+            if let Some(parent_id) = restore_parent {
+                self.activate_window(&parent_id);
             }
             let skip_layout = self
                 .stage_manager
@@ -1972,13 +1991,73 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.start_open_animation(id) || self.floating.start_open_animation(id)
     }
 
+    fn floating_tile_hits_at(&self, id: &W::Id, pos: Point<f64, Logical>) -> bool {
+        self.floating
+            .tiles_with_render_positions_rev()
+            .find(|(tile, _)| tile.window().id() == id)
+            .and_then(|(tile, tile_pos)| HitType::hit_tile(tile, tile_pos, pos))
+            .is_some()
+    }
+
+    fn stage_manager_resolve_activation_target(&self, window: &W::Id) -> W::Id {
+        self.stage_manager
+            .as_ref()
+            .map(|state| state.resolve_activation_target(self, window))
+            .unwrap_or_else(|| window.clone())
+    }
+
+    fn stage_manager_fix_z_order_for(&mut self, target: &W::Id) {
+        if !self.options.layout.stage_manager.is_some() {
+            return;
+        }
+        let fix_z = self
+            .stage_manager
+            .as_ref()
+            .is_some_and(|state| state.is_stage_window(target));
+        if fix_z {
+            let state = self.stage_manager.take().unwrap();
+            state.raise_stage_z_order(self, Some(target));
+            self.stage_manager = Some(state);
+        }
+    }
+
     pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, HitType)> {
         // This logic is consistent with tiles_with_render_positions().
         if self.is_floating_visible() {
+            // Modal overlays must be hit-tested before their parent, whose stage slot
+            // activation region often covers the whole dialog.
+            if let Some(state) = &self.stage_manager {
+                if let Some(rv) = self
+                    .floating
+                    .tiles_with_render_positions_rev()
+                    .find_map(|(tile, tile_pos)| {
+                        let id = tile.window().id();
+                        if !state.is_stage_child_of_active(self, id) {
+                            return None;
+                        }
+                        HitType::hit_tile(tile, tile_pos, pos)
+                    })
+                {
+                    return Some(rv);
+                }
+            }
+
+            let tile_hits_at = |id: &W::Id| self.floating_tile_hits_at(id, pos);
             if let Some(rv) = self
                 .floating
                 .tiles_with_render_positions_rev()
-                .find_map(|(tile, tile_pos)| HitType::hit_tile(tile, tile_pos, pos))
+                .find_map(|(tile, tile_pos)| {
+                    let id = tile.window().id();
+                    if let Some(state) = &self.stage_manager {
+                        if state.is_stage_window(id)
+                            && !state.is_stage_child_of_active(self, id)
+                            && state.stage_parent_hit_blocked_by_modal(self, id, &tile_hits_at)
+                        {
+                            return None;
+                        }
+                    }
+                    HitType::hit_tile(tile, tile_pos, pos)
+                })
             {
                 return Some(rv);
             }
@@ -2083,15 +2162,41 @@ impl<W: LayoutElement> Workspace<W> {
             return false;
         }
 
-        if self.floating.activate_window(window) {
+        let target = self.stage_manager_resolve_activation_target(window);
+
+        if self.floating.activate_window(&target) {
             self.floating_is_active = FloatingActive::Yes;
-        } else if self.scrolling.activate_window(window) {
+        } else if self.scrolling.activate_window(&target) {
             self.floating_is_active = FloatingActive::No;
         }
 
+        self.stage_manager_fix_z_order_for(&target);
         self.apply_stage_manager_layout();
         self.floating_is_active = FloatingActive::Yes;
         true
+    }
+
+    pub fn stage_manager_on_parent_changed(&mut self, child: &W::Id) -> bool {
+        if self.options.layout.stage_manager.is_none() {
+            return false;
+        }
+
+        let max_cast = self.stage_manager_max_cast();
+        let changed = if let Some(mut state) = self.stage_manager.take() {
+            let changed = state.on_parent_changed(self, child.clone(), max_cast);
+            self.stage_manager = Some(state);
+            changed
+        } else {
+            false
+        };
+
+        if changed {
+            self.stage_manager_save_active_sizes();
+            self.apply_stage_manager_layout();
+            self.activate_window(child);
+        }
+
+        changed
     }
 
     pub fn stage_manager_toggle_main(&mut self, window: &W::Id) -> bool {
@@ -2171,7 +2276,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn activate_window(&mut self, window: &W::Id) -> bool {
-        let stage_switch = if self.options.layout.stage_manager.is_some() {
+        let (target, stage_switch) = if self.options.layout.stage_manager.is_some() {
             self.stage_manager_save_active_sizes();
             let max_cast = self
                 .options
@@ -2180,21 +2285,22 @@ impl<W: LayoutElement> Workspace<W> {
                 .as_ref()
                 .map(|c| c.max_cast_groups)
                 .unwrap_or(6);
-            if self.stage_manager.is_some() {
-                let mut state = self.stage_manager.take().unwrap();
-                let changed = state.on_window_activated(self, window, max_cast);
+            if let Some(mut state) = self.stage_manager.take() {
+                let target = state.resolve_activation_target(self, window);
+                let changed = state.on_window_activated(self, &target, max_cast);
                 self.stage_manager = Some(state);
-                changed
+                (target, changed)
             } else {
-                false
+                (window.clone(), false)
             }
         } else {
-            false
+            (window.clone(), false)
         };
-        let activated = if self.floating.activate_window(window) {
+
+        let activated = if self.floating.activate_window(&target) {
             self.floating_is_active = FloatingActive::Yes;
             true
-        } else if self.scrolling.activate_window(window) {
+        } else if self.scrolling.activate_window(&target) {
             self.floating_is_active = FloatingActive::No;
             true
         } else {
@@ -2202,13 +2308,15 @@ impl<W: LayoutElement> Workspace<W> {
         };
 
         if activated {
+            self.stage_manager_fix_z_order_for(&target);
+
             if stage_switch {
                 self.apply_stage_manager_layout();
                 self.floating_is_active = FloatingActive::Yes;
             } else if self
                 .stage_manager
                 .as_ref()
-                .is_some_and(|state| state.is_cast_window(window))
+                .is_some_and(|state| state.is_cast_window(&target))
             {
                 self.stage_manager_follow_focus();
             }
@@ -2218,16 +2326,18 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn activate_window_without_raising(&mut self, window: &W::Id) -> bool {
+        let target = self.stage_manager_resolve_activation_target(window);
+
         if self.options.layout.stage_manager.is_some() {
             if let Some(state) = &mut self.stage_manager {
-                state.on_cast_focused_passive(window);
+                state.on_cast_focused_passive(&target);
             }
         }
 
-        if self.floating.activate_window_without_raising(window) {
+        let activated = if self.floating.activate_window_without_raising(&target) {
             self.floating_is_active = FloatingActive::Yes;
             true
-        } else if self.scrolling.activate_window(window) {
+        } else if self.scrolling.activate_window(&target) {
             self.floating_is_active = match self.floating_is_active {
                 FloatingActive::No => FloatingActive::No,
                 FloatingActive::NoButRaised => FloatingActive::NoButRaised,
@@ -2236,7 +2346,13 @@ impl<W: LayoutElement> Workspace<W> {
             true
         } else {
             false
+        };
+
+        if activated {
+            self.stage_manager_fix_z_order_for(&target);
         }
+
+        activated
     }
 
     pub(super) fn scrolling_insert_position(&self, pos: Point<f64, Logical>) -> InsertPosition {
@@ -2392,17 +2508,22 @@ impl<W: LayoutElement> Workspace<W> {
         let Some(config) = self.options.layout.stage_manager.clone() else {
             return false;
         };
-        let Some(state) = self.stage_manager.as_ref() else {
-            return false;
-        };
-        let Some(id) = super::stage_manager::try_focus_neighbor(self, state, &config, direction)
-        else {
-            return false;
+        let target = {
+            let Some(state) = self.stage_manager.as_ref() else {
+                return false;
+            };
+            let Some(id) =
+                super::stage_manager::try_focus_neighbor(self, state, &config, direction)
+            else {
+                return false;
+            };
+            state.resolve_activation_target(self, &id)
         };
         if let Some(state) = &mut self.stage_manager {
-            state.on_cast_focused_passive(&id);
+            state.on_cast_focused_passive(&target);
         }
-        self.floating.activate_window(&id);
+        self.floating.activate_window(&target);
+        self.stage_manager_fix_z_order_for(&target);
         self.stage_manager_follow_focus();
         true
     }

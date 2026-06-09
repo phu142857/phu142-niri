@@ -915,6 +915,20 @@ impl XdgShellHandler for State {
                 }
             }
         }
+
+        if let Some((mapped, output)) = self
+            .niri
+            .layout
+            .find_window_and_output_mut(toplevel.wl_surface())
+        {
+            let output = output.cloned();
+            let child = mapped.window.clone();
+            if self.niri.layout.stage_manager_on_parent_changed(&child) {
+                if let Some(output) = output {
+                    self.niri.queue_redraw(&output);
+                }
+            }
+        }
     }
 }
 

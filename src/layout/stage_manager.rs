@@ -111,6 +111,8 @@ pub struct StageManagerState<W: LayoutElement> {
     new_cast_windows: Vec<W::Id>,
     /// Stage window temporarily removed from the layout during an interactive move.
     interactive_move_stage: Option<W::Id>,
+    /// Dialog on the stage → its parent parked in the cast strip until the dialog closes.
+    stage_dialog_parents: Vec<(W::Id, W::Id)>,
 }
 
 impl<W: LayoutElement> StageManagerState<W> {
@@ -126,6 +128,7 @@ impl<W: LayoutElement> StageManagerState<W> {
             cast_group_layouts: Vec::new(),
             new_cast_windows: Vec::new(),
             interactive_move_stage: None,
+            stage_dialog_parents: Vec::new(),
         }
     }
 
@@ -236,9 +239,157 @@ impl<W: LayoutElement> StageManagerState<W> {
         state
     }
 
+    /// Whether [id] is a dialog opening on a window currently on the stage.
+    pub fn is_stage_child_of_active(
+        &self,
+        workspace: &Workspace<W>,
+        id: &W::Id,
+    ) -> bool {
+        self.stage_parent_on_stage(workspace, id).is_some()
+    }
+
+    pub fn is_stage_dialog(&self, id: &W::Id) -> bool {
+        self.stage_dialog_parents
+            .iter()
+            .any(|(dialog, _)| dialog == id)
+    }
+
+    fn stage_parent_on_stage(&self, workspace: &Workspace<W>, id: &W::Id) -> Option<W::Id> {
+        let child = workspace.windows().find(|w| w.id() == id)?;
+        let active = self.active_group.as_ref()?;
+        for parent_id in &active.windows {
+            if parent_id == id {
+                continue;
+            }
+            let Some(parent) = workspace.windows().find(|w| w.id() == parent_id) else {
+                continue;
+            };
+            if child.is_child_of(parent) {
+                return Some(parent_id.clone());
+            }
+        }
+        None
+    }
+
+    fn stage_parent_of(&self, workspace: &Workspace<W>, id: &W::Id) -> Option<W::Id> {
+        let child = workspace.windows().find(|w| w.id() == id)?;
+        for parent_id in self.all_managed_windows() {
+            if &parent_id == id {
+                continue;
+            }
+            let Some(parent) = workspace.windows().find(|w| w.id() == &parent_id) else {
+                continue;
+            };
+            if child.is_child_of(parent) {
+                return Some(parent_id);
+            }
+        }
+        None
+    }
+
+    /// Topmost modal overlay child of [parent_id] on the stage, if any.
+    pub fn stage_modal_overlay_for_parent(
+        &self,
+        workspace: &Workspace<W>,
+        parent_id: &W::Id,
+    ) -> Option<W::Id> {
+        let active = self.active_group.as_ref()?;
+        active
+            .windows
+            .iter()
+            .rev()
+            .find(|child_id| self.stage_parent_of(workspace, child_id).as_ref() == Some(parent_id))
+            .cloned()
+    }
+
+    pub fn has_stage_modal_overlay(&self, _workspace: &Workspace<W>) -> bool {
+        !self.stage_dialog_parents.is_empty()
+    }
+
+    /// Whether [parent_id] is a stage primary window that should not receive hits at [pos].
+    pub fn stage_parent_hit_blocked_by_modal(
+        &self,
+        workspace: &Workspace<W>,
+        parent_id: &W::Id,
+        tile_hits: &impl Fn(&W::Id) -> bool,
+    ) -> bool {
+        self.stage_modal_overlay_for_parent(workspace, parent_id)
+            .is_some_and(|overlay_id| tile_hits(&overlay_id))
+    }
+
+    /// Redirect activation from a stage parent to its open modal overlay.
+    pub fn resolve_activation_target(
+        &self,
+        workspace: &Workspace<W>,
+        id: &W::Id,
+    ) -> W::Id {
+        self.stage_modal_overlay_for_parent(workspace, id)
+            .unwrap_or_else(|| id.clone())
+    }
+
+    /// A child window gained an xdg parent after mapping.
+    pub fn on_parent_changed(
+        &mut self,
+        workspace: &mut Workspace<W>,
+        id: W::Id,
+        max_cast: usize,
+    ) -> bool {
+        let Some(parent_id) = self.stage_parent_of(workspace, &id) else {
+            return false;
+        };
+        if !self.is_stage_window(&parent_id) && !self.is_cast_window(&parent_id) {
+            return false;
+        }
+        self.open_stage_dialog(workspace, id, parent_id, max_cast);
+        true
+    }
+
+    /// Park the parent in the cast strip and show the dialog alone on the stage.
+    fn open_stage_dialog(
+        &mut self,
+        workspace: &mut Workspace<W>,
+        dialog_id: W::Id,
+        parent_id: W::Id,
+        max_cast: usize,
+    ) {
+        self.new_cast_windows.retain(|w| w != &dialog_id);
+        Self::remove_from_group_list(&mut self.cast_groups, &dialog_id);
+        Self::remove_from_group_list(&mut self.hidden_groups, &dialog_id);
+
+        if self.is_stage_window(&parent_id) {
+            workspace.floating.park_stage_position_for_cast(&parent_id);
+            if let Some(active) = &mut self.active_group {
+                active.remove(&parent_id);
+                if active.windows.is_empty() {
+                    self.active_group = None;
+                }
+            }
+            let key = workspace.window_stack_group_key(&parent_id);
+            self.insert_into_cast(workspace, parent_id.clone(), key);
+        }
+
+        self.stage_dialog_parents
+            .retain(|(_, parent)| parent != &parent_id);
+        self.stage_dialog_parents
+            .push((dialog_id.clone(), parent_id));
+
+        Self::remove_from_group_list(&mut self.cast_groups, &dialog_id);
+        Self::remove_from_group_list(&mut self.hidden_groups, &dialog_id);
+        self.active_group = Some(StageGroup::new(dialog_id));
+        self.enforce_cast_limit(max_cast);
+    }
+
+    pub(super) fn raise_stage_z_order(
+        &self,
+        workspace: &mut Workspace<W>,
+        active: Option<&W::Id>,
+    ) {
+        raise_stage_group_z_order(workspace, self, active);
+    }
+
     pub fn on_window_added(
         &mut self,
-        workspace: &Workspace<W>,
+        workspace: &mut Workspace<W>,
         id: W::Id,
         max_cast: usize,
     ) {
@@ -256,6 +407,11 @@ impl<W: LayoutElement> StageManagerState<W> {
             return;
         }
 
+        if let Some(parent_id) = self.stage_parent_on_stage(workspace, &id) {
+            self.open_stage_dialog(workspace, id, parent_id, max_cast);
+            return;
+        }
+
         let key = workspace.window_stack_group_key(&id);
         self.new_cast_windows.retain(|w| w != &id);
         self.new_cast_windows.push(id.clone());
@@ -263,10 +419,23 @@ impl<W: LayoutElement> StageManagerState<W> {
         self.enforce_cast_limit(max_cast);
     }
 
-    pub fn on_window_removed(&mut self, id: &W::Id, max_cast: usize) {
+    /// Returns the parent window to restore when a stage dialog closes.
+    pub fn on_window_removed(
+        &mut self,
+        workspace: &mut Workspace<W>,
+        id: &W::Id,
+        max_cast: usize,
+    ) -> Option<W::Id> {
         if self.interactive_move_stage.as_ref() == Some(id) {
-            return;
+            return None;
         }
+
+        let parent_to_restore = self
+            .stage_dialog_parents
+            .iter()
+            .find(|(dialog, _)| dialog == id)
+            .map(|(_, parent)| parent.clone());
+        self.stage_dialog_parents.retain(|(dialog, _)| dialog != id);
 
         self.new_cast_windows.retain(|w| w != id);
         if let Some(group) = &mut self.active_group {
@@ -277,6 +446,15 @@ impl<W: LayoutElement> StageManagerState<W> {
 
         Self::remove_from_group_list(&mut self.cast_groups, id);
         Self::remove_from_group_list(&mut self.hidden_groups, id);
+
+        if let Some(parent_id) = parent_to_restore {
+            Self::remove_from_group_list(&mut self.cast_groups, &parent_id);
+            Self::remove_from_group_list(&mut self.hidden_groups, &parent_id);
+            workspace.floating.restore_stage_saved_position(&parent_id);
+            self.active_group = Some(StageGroup::new(parent_id.clone()));
+            self.enforce_cast_limit(max_cast);
+            return Some(parent_id);
+        }
 
         if self.active_group.is_none() {
             if !self.cast_groups.is_empty() {
@@ -293,6 +471,8 @@ impl<W: LayoutElement> StageManagerState<W> {
                 self.hovered_cast = None;
             }
         }
+
+        None
     }
 
     /// Focus a cast window without promoting it to the stage (used for newly opened windows).
@@ -898,6 +1078,13 @@ pub fn tick_auto_use_as_main<W: LayoutElement>(
         return had_state;
     }
 
+    if state.has_stage_modal_overlay(workspace) {
+        let had_state = state.interaction_target.is_some() || state.interaction_since.is_some();
+        state.interaction_target = None;
+        state.interaction_since = None;
+        return had_state;
+    }
+
     let focused_cast = workspace
         .active_window()
         .and_then(|w| state.cast_index_for(w.id()));
@@ -1121,11 +1308,7 @@ fn apply_geometry<W: LayoutElement>(
         if state.is_cast_window(&active) {
             workspace.floating.raise_to_top(&active);
         } else if state.is_stage_window(&active) {
-            if let Some(group) = &state.active_group {
-                for id in &group.windows {
-                    workspace.floating.raise_to_top(id);
-                }
-            }
+            raise_stage_group_z_order(workspace, state, Some(&active));
         }
     } else if let Some(hovered) = state.hovered_cast {
         if let Some(id) = state
@@ -1314,6 +1497,42 @@ fn set_strip_thumb_geometry<W: LayoutElement>(
     );
 }
 
+fn is_stage_child_overlay<W: LayoutElement>(
+    _workspace: &Workspace<W>,
+    state: &StageManagerState<W>,
+    id: &W::Id,
+) -> bool {
+    state.is_stage_dialog(id)
+}
+
+fn raise_stage_group_z_order<W: LayoutElement>(
+    workspace: &mut Workspace<W>,
+    state: &StageManagerState<W>,
+    active: Option<&W::Id>,
+) {
+    let Some(group) = &state.active_group else {
+        return;
+    };
+
+    for id in &group.windows {
+        if !is_stage_child_overlay(workspace, state, id) {
+            workspace.floating.raise_to_top(id);
+        }
+    }
+    for id in &group.windows {
+        if is_stage_child_overlay(workspace, state, id) {
+            workspace.floating.raise_to_top(id);
+        }
+    }
+
+    if let Some(active) = active {
+        let top = state
+            .stage_modal_overlay_for_parent(workspace, active)
+            .unwrap_or_else(|| active.clone());
+        workspace.floating.raise_to_top(&top);
+    }
+}
+
 fn apply_stage_geometry<W: LayoutElement>(
     workspace: &mut Workspace<W>,
     stage_area: Rectangle<f64, Logical>,
@@ -1323,8 +1542,13 @@ fn apply_stage_geometry<W: LayoutElement>(
         return;
     };
 
-    let windows = &group.windows;
-    let n = windows.len();
+    let primary_windows: Vec<_> = group
+        .windows
+        .iter()
+        .filter(|id| !is_stage_child_overlay(workspace, state, id))
+        .cloned()
+        .collect();
+    let n = primary_windows.len();
     if n == 0 {
         return;
     }
@@ -1337,8 +1561,11 @@ fn apply_stage_geometry<W: LayoutElement>(
     let stage_inner_height = stage_area.size.h;
     let slot_width = (stage_inner_width - total_gap) / n as f64;
 
-    for (i, id) in windows.iter().enumerate() {
+    for id in &group.windows {
         move_to_floating(workspace, id);
+    }
+
+    for (i, id) in primary_windows.iter().enumerate() {
         if !workspace.floating.has_window(id) {
             continue;
         }

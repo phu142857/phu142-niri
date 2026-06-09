@@ -1257,6 +1257,16 @@ impl<W: LayoutElement> Layout<W> {
         false
     }
 
+    pub fn stage_manager_on_parent_changed(&mut self, child: &W::Id) -> bool {
+        for ws in self.workspaces_mut() {
+            if ws.has_window(child) && ws.stage_manager_on_parent_changed(child) {
+                return true;
+            }
+        }
+
+        false
+    }
+
     pub fn update_window(&mut self, window: &W::Id, serial: Option<Serial>) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if move_.tile.window().id() == window {
