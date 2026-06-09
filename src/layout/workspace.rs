@@ -2218,6 +2218,12 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn activate_window_without_raising(&mut self, window: &W::Id) -> bool {
+        if self.options.layout.stage_manager.is_some() {
+            if let Some(state) = &mut self.stage_manager {
+                state.on_cast_focused_passive(window);
+            }
+        }
+
         if self.floating.activate_window_without_raising(window) {
             self.floating_is_active = FloatingActive::Yes;
             true
@@ -2393,6 +2399,9 @@ impl<W: LayoutElement> Workspace<W> {
         else {
             return false;
         };
+        if let Some(state) = &mut self.stage_manager {
+            state.on_cast_focused_passive(&id);
+        }
         self.floating.activate_window(&id);
         self.stage_manager_follow_focus();
         true

@@ -106,9 +106,8 @@ pub struct StageManagerState<W: LayoutElement> {
     interaction_since: Option<Duration>,
     /// Cached layout for pointer hit-testing.
     pub cast_group_layouts: Vec<CastGroupLayout>,
-    /// Windows just added to the cast strip; skip promoting them on the first focus request.
-    ///
-    /// Also used to defer promotion while another stage window is being interactively moved.
+    /// Cast windows that skip immediate promotion on the first explicit activation (click).
+    /// Cleared on passive focus or when the auto-use-as-main dwell timer starts.
     new_cast_windows: Vec<W::Id>,
     /// Stage window temporarily removed from the layout during an interactive move.
     interactive_move_stage: Option<W::Id>,
@@ -149,9 +148,17 @@ impl<W: LayoutElement> StageManagerState<W> {
         self.new_cast_windows.iter().any(|w| w == id)
     }
 
-    fn defer_promote(&mut self, id: W::Id) {
-        self.new_cast_windows.retain(|w| w != &id);
-        self.new_cast_windows.push(id);
+    /// Drop the one-shot click deferral for a cast window (does not promote).
+    pub fn consume_promote_defer(&mut self, id: &W::Id) {
+        self.new_cast_windows.retain(|w| w != id);
+    }
+
+    /// Cast received focus without an explicit activation request (e.g. focus-follows-mouse).
+    pub fn on_cast_focused_passive(&mut self, id: &W::Id) {
+        if self.is_cast_window(id) {
+            let target_id = self.cast_group_front_for(id).unwrap_or_else(|| id.clone());
+            self.consume_promote_defer(&target_id);
+        }
     }
 
     pub fn auto_use_as_main_timer_active(&self, config: &StageManagerConfig) -> bool {
@@ -301,13 +308,8 @@ impl<W: LayoutElement> StageManagerState<W> {
 
         let target_id = self.cast_group_front_for(id).unwrap_or_else(|| id.clone());
 
-        if self.interactive_move_stage.is_some() && self.is_cast_window(&target_id) {
-            self.defer_promote(target_id);
-            return false;
-        }
-
         if self.should_defer_promote(&target_id) {
-            self.new_cast_windows.retain(|w| w != &target_id);
+            self.consume_promote_defer(&target_id);
             return false;
         }
 
@@ -905,6 +907,14 @@ pub fn tick_auto_use_as_main<W: LayoutElement>(
     let mut changed = false;
 
     if target != state.interaction_target {
+        if let Some(idx) = target {
+            if let Some(id) = state
+                .group_at_layout_index(idx)
+                .and_then(|g| g.windows.first().cloned())
+            {
+                state.consume_promote_defer(&id);
+            }
+        }
         state.interaction_target = target;
         state.interaction_since = target.map(|_| now);
         changed = true;
@@ -936,11 +946,8 @@ pub fn tick_auto_use_as_main<W: LayoutElement>(
         return changed;
     }
 
-    if state.should_defer_promote(&id) {
-        return changed;
-    }
-
     workspace.stage_manager_save_active_sizes();
+    state.consume_promote_defer(&id);
     state.set_stage_single(workspace, id, config.max_cast_groups);
     state.interaction_target = None;
     state.interaction_since = None;
