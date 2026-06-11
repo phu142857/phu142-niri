@@ -3027,6 +3027,15 @@ impl State {
                 }
 
                 if !is_overview_open {
+                    let location = pointer.current_location();
+                    let output = self
+                        .niri
+                        .output_under(location)
+                        .map(|(output, _)| output.clone());
+                    if let Some(output) = output {
+                        self.niri.layout.focus_output(&output);
+                    }
+
                     if self.niri.layout.is_stage_manager_strip_window(&window) {
                         self.niri.layout.stage_manager_promote_cast(&window);
                     } else {

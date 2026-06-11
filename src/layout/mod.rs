@@ -1914,17 +1914,31 @@ impl<W: LayoutElement> Layout<W> {
         window: &W::Id,
         f: impl FnOnce(&mut Workspace<W>, &W::Id) -> bool,
     ) -> bool {
-        let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set else {
+        let MonitorSet::Normal {
+            monitors,
+            active_monitor_idx,
+            ..
+        } = &mut self.monitor_set
+        else {
             return false;
         };
 
-        for mon in monitors.iter_mut() {
-            if mon.workspaces.iter().any(|ws| ws.has_window(window)) {
-                return mon
-                    .workspaces
-                    .iter_mut()
-                    .find(|ws| ws.has_window(window))
-                    .is_some_and(|ws| f(ws, window));
+        for (monitor_idx, mon) in monitors.iter_mut().enumerate() {
+            for (workspace_idx, ws) in mon.workspaces.iter_mut().enumerate() {
+                if !ws.has_window(window) {
+                    continue;
+                }
+                if !f(ws, window) {
+                    return false;
+                }
+                *active_monitor_idx = monitor_idx;
+                match &mon.workspace_switch {
+                    Some(WorkspaceSwitch::Gesture(gesture))
+                        if gesture.current_idx.floor() == workspace_idx as f64
+                            || gesture.current_idx.ceil() == workspace_idx as f64 => {}
+                    _ => mon.switch_workspace(workspace_idx),
+                }
+                return true;
             }
         }
 
