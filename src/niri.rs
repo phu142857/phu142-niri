@@ -6201,10 +6201,6 @@ impl Niri {
     }
 
     pub fn handle_focus_follows_mouse(&mut self, new_focus: &PointContents) {
-        let Some(ffm) = self.config.borrow().input.focus_follows_mouse else {
-            return;
-        };
-
         let pointer = &self.seat.get_pointer().unwrap();
         if pointer.is_grabbed() {
             return;
@@ -6214,14 +6210,24 @@ impl Niri {
             return;
         }
 
-        // Recompute the current pointer focus because we don't update it during animations.
-        let current_focus = self.contents_under(pointer.current_location());
-
+        // Per-monitor focus when the pointer enters another output. This runs even when
+        // focus-follows-mouse is disabled so each monitor keeps its own main/stage focus.
         if let Some(output) = &new_focus.output {
-            if current_focus.output.as_ref() != Some(output) {
+            // Compare against the active monitor, not current_focus.output: both are computed at
+            // the same pointer location, so they would always match and we'd never switch monitors.
+            if self.layout.active_output().map(|o| o as *const _) != Some(output as *const _) {
                 self.layout.focus_output(output);
+                self.layout.focus_follows_mouse_enter_output(output);
+                self.layer_shell_on_demand_focus = None;
             }
         }
+
+        let Some(ffm) = self.config.borrow().input.focus_follows_mouse else {
+            return;
+        };
+
+        // Recompute the current pointer focus because we don't update it during animations.
+        let current_focus = self.contents_under(pointer.current_location());
 
         if let Some(window) = &new_focus.window {
             if !self.layout.is_overview_open() && current_focus.window.as_ref() != Some(window) {

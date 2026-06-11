@@ -563,6 +563,21 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
+    /// Window to focus when the pointer enters this workspace's monitor without clicking.
+    pub fn focus_follows_mouse_monitor_target(&self) -> Option<W::Id> {
+        if let Some(state) = &self.stage_manager {
+            if let Some(main) = state
+                .active_group
+                .as_ref()
+                .and_then(|group| group.windows.first())
+            {
+                return Some(state.resolve_activation_target(self, main));
+            }
+        }
+
+        self.active_window().map(|w| w.id().clone())
+    }
+
     pub fn active_window_mut(&mut self) -> Option<&mut W> {
         if self.floating_is_active.get() {
             self.floating.active_window_mut()

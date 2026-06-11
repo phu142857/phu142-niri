@@ -3469,6 +3469,17 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
+    /// Restore this monitor's layout focus when the pointer enters it (focus-follows-mouse).
+    pub fn focus_follows_mouse_enter_output(&mut self, output: &Output) {
+        let Some(id) = self
+            .monitor_for_output(output)
+            .and_then(|mon| mon.active_workspace_ref().focus_follows_mouse_monitor_target())
+        else {
+            return;
+        };
+        self.activate_window_without_raising(&id);
+    }
+
     pub fn move_to_output(
         &mut self,
         window: Option<&W::Id>,
