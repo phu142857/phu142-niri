@@ -434,6 +434,8 @@ enum InteractiveMoveState<W: LayoutElement> {
 struct InteractiveMoveData<W: LayoutElement> {
     /// The window being moved.
     pub(self) tile: Tile<W>,
+    /// Output where the interactive move started.
+    pub(self) origin_output: Output,
     /// Output where the window is currently located/rendered.
     pub(self) output: Output,
     /// Current pointer position within output.
@@ -4212,6 +4214,7 @@ impl<W: LayoutElement> Layout<W> {
 
                 let mut data = InteractiveMoveData {
                     tile,
+                    origin_output: output.clone(),
                     output,
                     pointer_pos_within_output,
                     width,
@@ -4436,6 +4439,9 @@ impl<W: LayoutElement> Layout<W> {
 
         let win_id = move_.tile.window().id().clone();
         let pointer_pos_within_output = move_.pointer_pos_within_output;
+        let origin_output = move_.origin_output.clone();
+        let drop_output = move_.output.clone();
+        let cross_monitor_drop = origin_output != drop_output;
 
         match &mut self.monitor_set {
             MonitorSet::Normal {
@@ -4628,7 +4634,12 @@ impl<W: LayoutElement> Layout<W> {
 
         if self.options.layout.stage_manager.is_some() {
             for ws in self.workspaces_mut() {
-                if ws.has_window(&win_id) {
+                if !ws.has_window(&win_id) {
+                    continue;
+                }
+                if cross_monitor_drop {
+                    ws.stage_manager_cross_monitor_drop(&win_id);
+                } else {
                     ws.stage_manager_strip_drag_end(&win_id, pointer_pos_within_output);
                 }
             }

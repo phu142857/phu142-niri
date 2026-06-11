@@ -2466,6 +2466,26 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
+    pub fn stage_manager_cross_monitor_drop(&mut self, window: &W::Id) -> bool {
+        let Some(config) = self.options.layout.stage_manager.clone() else {
+            return false;
+        };
+        let Some(mut state) = self.stage_manager.take() else {
+            return false;
+        };
+
+        super::stage_manager::cross_monitor_move_finish(self, &config, &mut state, window);
+        let on_main = state.is_stage_window(window);
+        self.stage_manager = Some(state);
+        self.floating_is_active = FloatingActive::Yes;
+        if on_main {
+            self.activate_window(window);
+        } else {
+            self.activate_window_without_raising(window);
+        }
+        true
+    }
+
     pub fn stage_manager_strip_drag_end(
         &mut self,
         window: &W::Id,

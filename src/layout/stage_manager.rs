@@ -634,6 +634,35 @@ impl<W: LayoutElement> StageManagerState<W> {
         true
     }
 
+    /// Move a window onto the cast strip (e.g. after a cross-monitor interactive move).
+    pub fn force_window_to_cast(
+        &mut self,
+        workspace: &mut Workspace<W>,
+        id: W::Id,
+        max_cast: usize,
+    ) -> bool {
+        self.stage_dialog_parents.retain(|(dialog, _)| dialog != &id);
+        self.new_cast_windows.retain(|w| w != &id);
+
+        if self.is_stage_window(&id) {
+            workspace.floating.park_stage_position_for_cast(&id);
+            if let Some(active) = &mut self.active_group {
+                active.remove(&id);
+                if active.windows.is_empty() {
+                    self.active_group = None;
+                }
+            }
+        }
+
+        Self::remove_from_group_list(&mut self.cast_groups, &id);
+        Self::remove_from_group_list(&mut self.hidden_groups, &id);
+
+        let key = workspace.window_stack_group_key(&id);
+        self.insert_into_cast(workspace, id, key);
+        self.enforce_cast_limit(max_cast);
+        true
+    }
+
     /// Drag a stage window to the cast strip.
     pub fn on_window_dragged_to_cast(
         &mut self,
@@ -664,6 +693,12 @@ impl<W: LayoutElement> StageManagerState<W> {
         self.active_group
             .as_ref()
             .is_some_and(|g| g.contains(id))
+    }
+
+    pub fn stage_has_main(&self) -> bool {
+        self.active_group
+            .as_ref()
+            .is_some_and(|g| !g.windows.is_empty())
     }
 
     pub fn is_cast_window(&self, id: &W::Id) -> bool {
@@ -974,6 +1009,34 @@ pub fn pointer_in_stage_area(
     compute_areas(working_area, config)
         .stage_area
         .contains(point)
+}
+
+/// Place a window dropped from another monitor onto the stage or cast strip.
+pub fn cross_monitor_move_finish<W: LayoutElement>(
+    workspace: &mut Workspace<W>,
+    config: &StageManagerConfig,
+    state: &mut StageManagerState<W>,
+    window: &W::Id,
+) -> bool {
+    if state.active_group.as_ref().is_some_and(|g| {
+        g.windows.len() == 1 && g.windows.first() == Some(window)
+    }) {
+        return false;
+    }
+
+    workspace.stage_manager_save_active_sizes();
+    let changed = if state.stage_has_main() {
+        state.force_window_to_cast(workspace, window.clone(), config.max_cast_groups)
+    } else {
+        state.set_stage_single(workspace, window.clone(), config.max_cast_groups);
+        true
+    };
+
+    if changed {
+        reorganize(workspace, state);
+        apply_geometry(workspace, config, state);
+    }
+    changed
 }
 
 pub fn strip_drag_end<W: LayoutElement>(
