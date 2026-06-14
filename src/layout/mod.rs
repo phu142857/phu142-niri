@@ -3558,6 +3558,9 @@ impl<W: LayoutElement> Layout<W> {
 
             removed.tile.stop_move_animations();
 
+            let window_id = removed.tile.window().id().clone();
+            let cross_monitor = mon_idx != new_idx;
+
             let mon = &mut monitors[new_idx];
             mon.add_tile(
                 removed.tile,
@@ -3571,6 +3574,12 @@ impl<W: LayoutElement> Layout<W> {
                 removed.is_full_width,
                 removed.is_floating,
             );
+
+            if cross_monitor && self.options.layout.stage_manager.is_some() {
+                monitors[new_idx].workspaces[workspace_idx]
+                    .stage_manager_cross_monitor_drop(&window_id);
+            }
+
             if activate.map_smart(|| false) {
                 *active_monitor_idx = new_idx;
             }
