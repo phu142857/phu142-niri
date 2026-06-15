@@ -18,9 +18,6 @@ use crate::utils::transaction::Transaction;
 
 static GROUP_ID_COUNTER: IdCounter = IdCounter::new();
 
-/// 16:9 default aspect ratio for windows without a saved size.
-const ASPECT_RATIO: f64 = 9.0 / 16.0;
-
 /// Padding between layout areas and the screen edges.
 const STAGE_EDGE_PADDING: f64 = 2.;
 
@@ -875,11 +872,12 @@ fn compute_areas(
     let w = working_area.size.w;
     let h = working_area.size.h;
     let pad = STAGE_EDGE_PADDING;
-    let p = config.proportion;
 
     match config.stack_position {
         StackPosition::Left => {
-            let stage_w = w * p - pad;
+            let stage_w = (config.target_stage_width() - pad)
+                .min(w - pad * 2.)
+                .max(1.);
             let stack_w = w - stage_w - pad;
             StageAreas {
                 stack_area: Rectangle::new(loc, Size::from((stack_w, h))),
@@ -890,7 +888,9 @@ fn compute_areas(
             }
         }
         StackPosition::Right => {
-            let stage_w = w * p - pad;
+            let stage_w = (config.target_stage_width() - pad)
+                .min(w - pad * 2.)
+                .max(1.);
             let stack_w = w - stage_w - pad;
             StageAreas {
                 stack_area: Rectangle::new(
@@ -901,7 +901,9 @@ fn compute_areas(
             }
         }
         StackPosition::Top => {
-            let stage_h = h * p - pad;
+            let stage_h = (config.target_stage_height() - pad)
+                .min(h - pad * 2.)
+                .max(1.);
             let stack_h = h - stage_h - pad;
             StageAreas {
                 stack_area: Rectangle::new(loc, Size::from((w, stack_h))),
@@ -912,7 +914,9 @@ fn compute_areas(
             }
         }
         StackPosition::Bottom => {
-            let stage_h = h * p - pad;
+            let stage_h = (config.target_stage_height() - pad)
+                .min(h - pad * 2.)
+                .max(1.);
             let stack_h = h - stage_h - pad;
             StageAreas {
                 stack_area: Rectangle::new(
@@ -1340,19 +1344,38 @@ fn scroll_stack_to_focused_cast<W: LayoutElement>(
     state.cast_scroll_offset = scroll;
 }
 
+fn cast_thumb_size(
+    working_area: Rectangle<f64, Logical>,
+    areas: StageAreas,
+    config: &StageManagerConfig,
+) -> (i32, i32) {
+    if config.stack_position.is_vertical() {
+        let thumb_width = (areas.stack_area.size.w - STACK_INSET * 2.)
+            .round()
+            .max(1.) as i32;
+        let thumb_height = (working_area.size.h * config.thumb_scale)
+            .round()
+            .max(1.) as i32;
+        (thumb_width, thumb_height)
+    } else {
+        let thumb_width = (working_area.size.w * config.thumb_scale)
+            .round()
+            .max(1.) as i32;
+        let thumb_height = (areas.stack_area.size.h - STACK_INSET * 2.)
+            .round()
+            .max(1.) as i32;
+        (thumb_width, thumb_height)
+    }
+}
+
 fn apply_geometry<W: LayoutElement>(
     workspace: &mut Workspace<W>,
     config: &StageManagerConfig,
     state: &mut StageManagerState<W>,
 ) {
     let working_area = workspace.working_area();
-    let monitor_width = working_area.size.w;
-
-    let thumb_width =
-        (monitor_width * config.thumb_scale).round().max(1.) as i32;
-    let thumb_height = (f64::from(thumb_width) * ASPECT_RATIO).round().max(1.) as i32;
-
     let areas = compute_areas(working_area, config);
+    let (thumb_width, thumb_height) = cast_thumb_size(working_area, areas, config);
 
     scroll_stack_to_focused_cast(workspace, config, state, areas, thumb_width, thumb_height);
 
@@ -1365,7 +1388,7 @@ fn apply_geometry<W: LayoutElement>(
         state,
     );
 
-    apply_stage_geometry(workspace, areas.stage_area, state);
+    apply_stage_geometry(workspace, config, areas.stage_area, state);
 
     if let Some(active) = workspace.active_window().map(|w| w.id().clone()) {
         if state.is_cast_window(&active) {
@@ -1598,6 +1621,7 @@ fn raise_stage_group_z_order<W: LayoutElement>(
 
 fn apply_stage_geometry<W: LayoutElement>(
     workspace: &mut Workspace<W>,
+    config: &StageManagerConfig,
     stage_area: Rectangle<f64, Logical>,
     state: &StageManagerState<W>,
 ) {
@@ -1616,6 +1640,7 @@ fn apply_stage_geometry<W: LayoutElement>(
         return;
     }
 
+    let pad = STAGE_EDGE_PADDING;
     let gap = workspace.options.layout.gaps;
     let total_gap = gap * (n.saturating_sub(1)) as f64;
     let stage_left = stage_area.loc.x;
@@ -1623,6 +1648,12 @@ fn apply_stage_geometry<W: LayoutElement>(
     let stage_inner_width = stage_area.size.w.max(1.);
     let stage_inner_height = stage_area.size.h;
     let slot_width = (stage_inner_width - total_gap) / n as f64;
+    let vertical_stack = config.stack_position.is_vertical();
+    let cross_dim_default = if vertical_stack {
+        (config.target_stage_height() - pad).max(1.)
+    } else {
+        (config.target_stage_width() - pad).max(1.)
+    };
 
     for id in &group.windows {
         move_to_floating(workspace, id);
@@ -1633,24 +1664,41 @@ fn apply_stage_geometry<W: LayoutElement>(
             continue;
         }
 
-        let x = stage_left + i as f64 * (slot_width + gap);
-        // Fill each slot to the computed right edge; saved width often leaves a large right gap.
         let window_width = if i + 1 == n {
-            (stage_right - x).max(1.)
+            (stage_right - (stage_left + i as f64 * (slot_width + gap))).max(1.)
         } else {
             slot_width
         };
 
+        let (avail_w, avail_h) = if vertical_stack {
+            (window_width, cross_dim_default)
+        } else {
+            (cross_dim_default, stage_inner_height)
+        };
+
         let saved = workspace.floating.stage_manager_saved_size(id);
-        let mut size = resolve_stage_window_size(saved, window_width, stage_inner_height);
+        let mut size = resolve_stage_window_size(saved, avail_w, avail_h);
         if saved.is_none() {
-            // First time on main: fill to the right edge. Restored windows keep saved width.
-            size.w = window_width.round().max(1.) as i32;
+            if vertical_stack {
+                size.w = window_width.round().max(1.) as i32;
+                size.h = cross_dim_default.round().max(1.) as i32;
+            } else {
+                size.w = cross_dim_default.round().max(1.) as i32;
+                size.h = stage_inner_height.round().max(1.) as i32;
+            }
         }
+
         if workspace.floating.has_user_position(id) {
             continue;
         }
 
+        let x = if vertical_stack {
+            stage_left + i as f64 * (slot_width + gap)
+        } else {
+            stage_left
+                + i as f64 * (slot_width + gap)
+                + (slot_width - f64::from(size.w)) / 2.
+        };
         let y = stage_area.loc.y + (stage_inner_height - f64::from(size.h)) / 2.;
         set_stage_window_geometry(workspace, id, size, Point::from((x, y)));
     }
@@ -1662,7 +1710,7 @@ fn resolve_stage_window_size(
     available_height: f64,
 ) -> Size<i32, Logical> {
     let default_w = available_width.round().max(1.) as i32;
-    let default_h = (f64::from(default_w) * ASPECT_RATIO).round().max(1.) as i32;
+    let default_h = available_height.round().max(1.) as i32;
 
     let mut size = saved.unwrap_or_else(|| Size::from((default_w, default_h)));
 
@@ -1687,9 +1735,18 @@ mod tests {
     }
 
     #[test]
-    fn resolve_stage_window_size_defaults_to_available_width() {
-        let size = resolve_stage_window_size(None, 1800., 1080.);
+    fn resolve_stage_window_size_defaults_to_available_size() {
+        let size = resolve_stage_window_size(None, 1800., 900.);
         assert_eq!(size.w, 1800);
+        assert_eq!(size.h, 900);
+    }
+
+    #[test]
+    fn resolve_stage_window_size_clamps_saved_height() {
+        let saved = Size::from((1200, 2000));
+        let size = resolve_stage_window_size(Some(saved), 1800., 900.);
+        assert_eq!(size.w, 1200);
+        assert_eq!(size.h, 900);
     }
 }
 

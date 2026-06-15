@@ -838,7 +838,6 @@ impl<W: LayoutElement> Workspace<W> {
                 false
             };
             if on_stage {
-                self.stage_manager_save_active_sizes();
                 self.floating_is_active = FloatingActive::Yes;
                 if is_stage_dialog {
                     self.activate_window(&window_id);
@@ -2149,6 +2148,9 @@ impl<W: LayoutElement> Workspace<W> {
             .map(|state| state.active_windows())
             .unwrap_or_default();
         for id in ids {
+            if self.floating.stage_manager_saved_size(&id).is_none() {
+                continue;
+            }
             if let Some(size) = self.floating.stage_window_size(&id) {
                 self.floating.set_stage_manager_saved_size(&id, size);
             }

@@ -17,8 +17,8 @@ Stage Manager chia màn hình thành hai vùng:
 
 | Vùng             | Mô tả                                                                     |
 | ---------------- | ------------------------------------------------------------------------- |
-| **Main (stage)** | Ứng dụng đang làm việc chính, chiếm phần lớn màn hình (theo `proportion`) |
-| **Cast strip**   | Các app khác hiển thị dạng thumbnail dọc bên trái; click để đưa lên main  |
+| **Main (stage)** | Ứng dụng chính; kích thước theo `proportion-horizontal` × 1920 và `proportion-vertical` × 1080 |
+| **Cast strip**   | Các app khác hiển thị thumbnail trên cạnh màn hình (`stack-position`); click để đưa lên main      |
 
 
 ---
@@ -105,25 +105,32 @@ Thêm block `stage-manager` trong `layout { }`:
 
 ```kdl
 layout {
-  
     center-focused-column "never"
 
     stage-manager {
-        // Phần rộng vùng main (0.1 – 0.9), mặc định 0.7
-        proportion 0.7
-
-        // Số nhóm tối đa hiển thị trên cast strip, mặc định 6
+        proportion-horizontal 0.825
+        proportion-vertical 0.92
+        stack-position "left"
         max-cast-groups 2
+        thumb-scale 0.19
 
-        // Tỉ lệ thumbnail so với chiều rộng màn hình (0.1 – 0.3), mặc định 0.15
-        thumb-scale 0.15
-
-        // Focus stack (bàn phím) → tự đưa app lên main (giữ kích thước đã lưu)
-        // auto-use-as-main true
-        // auto-use-as-main-delay-ms 2000   // ms, 0 = ngay lập tức
+        auto-use-as-main true
+        auto-use-as-main-delay-ms 0
     }
 }
 ```
+
+| Tuỳ chọn | Giá trị ví dụ | Ý nghĩa |
+| -------- | ------------- | ------- |
+| `proportion-horizontal` | `0.825` | Chiều rộng main = 0.825 × **1920** → **1584 px** |
+| `proportion-vertical` | `0.92` | Chiều cao main = 0.92 × **1080** → **994 px** |
+| `stack-position` | `"left"` | Cast strip bên trái (`right`, `top`, `bottom`) |
+| `max-cast-groups` | `2` | Tối đa 2 nhóm thumbnail trên strip |
+| `thumb-scale` | `0.19` | Kích thước thumbnail (0.1 – 0.3) |
+| `auto-use-as-main` | `true` | Focus thumbnail (bàn phím) → tự lên main |
+| `auto-use-as-main-delay-ms` | `0` | Không chờ; lên main ngay khi focus stack |
+
+`proportion` (cũ) vẫn dùng được — gán cả ngang và dọc cùng một giá trị nếu không ghi riêng.
 
 Nếu **không** có block `stage-manager`, compositor chạy layout niri gốc (không có cast strip).
 
@@ -152,7 +159,7 @@ binds {
 
 - **Click thumbnail** trên cast strip → app đó lên main, thay app main hiện tại.
 - **Kéo thumbnail** lên vùng main → cùng hiệu ứng thay thế / merge tùy vị trí thả.
-- **`auto-use-as-main true`**: focus thumbnail trên stack (bàn phím) → app tự lên main sau `auto-use-as-main-delay-ms` (mặc định 2000). Giữ kích thước user đã chỉnh. Mặc định `auto-use-as-main false`. Hover chuột không kích hoạt.
+- **`auto-use-as-main true`**: focus thumbnail trên stack (bàn phím) → app tự lên main sau `auto-use-as-main-delay-ms` (`0` = ngay lập tức). Giữ kích thước đã resize thủ công. Hover chuột không kích hoạt.
 
 Config reload live: sửa `config.kdl` và lưu — niri tự nạp lại (trừ vài thay đổi cần restart session).
 
