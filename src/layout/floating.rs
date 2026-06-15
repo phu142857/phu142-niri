@@ -1176,14 +1176,40 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     /// Save the current main-stage position and clear manual placement so cast layout can run.
-    pub fn park_stage_position_for_cast(&mut self, id: &W::Id) {
+    ///
+    /// When [save_pos] is false (e.g. demoted from parallel layout), position is not remembered.
+    pub fn park_stage_position_for_cast(&mut self, id: &W::Id, save_pos: bool) {
         let Some(idx) = self.idx_of(id) else {
             return;
         };
-        let frac = self.logical_to_size_frac(self.data[idx].logical_pos);
-        self.tiles[idx].set_stage_manager_saved_pos(Some(frac));
+        if save_pos {
+            let frac = self.logical_to_size_frac(self.data[idx].logical_pos);
+            self.tiles[idx].set_stage_manager_saved_pos(Some(frac));
+        } else {
+            self.tiles[idx].set_stage_manager_saved_pos(None);
+        }
+        self.tiles[idx].set_stage_manager_saved_size(None);
         self.tiles[idx].floating_pos = None;
+        self.tiles[idx].interactive_move_offset = Point::from((0., 0.));
+        self.tiles[idx].stop_move_animations();
+        self.interactive_resize_end(Some(id));
         self.clear_stage_manager_thumb(id);
+        self.data[idx].update(&self.tiles[idx]);
+    }
+
+    /// Clear remembered layout so the next stage-manager apply uses config defaults.
+    pub fn clear_stage_manager_default_layout(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        self.tiles[idx].set_stage_manager_saved_size(None);
+        self.tiles[idx].set_stage_manager_saved_pos(None);
+        self.tiles[idx].floating_pos = None;
+        self.tiles[idx].interactive_move_offset = Point::from((0., 0.));
+        self.tiles[idx].stop_move_animations();
+        self.interactive_resize_end(Some(id));
+        self.clear_stage_manager_thumb(id);
+        self.data[idx].update(&self.tiles[idx]);
     }
 
     /// Restore a previously saved main-stage position after promotion from the cast strip.

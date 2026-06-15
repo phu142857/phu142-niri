@@ -354,7 +354,9 @@ impl<W: LayoutElement> StageManagerState<W> {
         Self::remove_from_group_list(&mut self.hidden_groups, &dialog_id);
 
         if self.is_stage_window(&parent_id) {
-            workspace.floating.park_stage_position_for_cast(&parent_id);
+            workspace
+                .floating
+                .park_stage_position_for_cast(&parent_id, true);
             if let Some(active) = &mut self.active_group {
                 active.remove(&parent_id);
                 if active.windows.is_empty() {
@@ -622,9 +624,17 @@ impl<W: LayoutElement> StageManagerState<W> {
         }
 
         for win in demoted {
-            workspace.floating.park_stage_position_for_cast(&win);
+            workspace.floating.park_stage_position_for_cast(&win, false);
             let key = workspace.window_stack_group_key(&win);
             self.insert_into_cast(workspace, win, key);
+        }
+
+        if self.active_group.as_ref().is_some_and(|g| g.windows.len() == MAX_PARALLEL_STAGE) {
+            for win in &self.active_group.as_ref().unwrap().windows {
+                workspace.floating.clear_stage_manager_default_layout(win);
+            }
+            self.clear_auto_use_as_main_timer();
+            self.clear_pointer_hover();
         }
 
         self.enforce_cast_limit(max_cast);
@@ -642,7 +652,12 @@ impl<W: LayoutElement> StageManagerState<W> {
         self.new_cast_windows.retain(|w| w != &id);
 
         if self.is_stage_window(&id) {
-            workspace.floating.park_stage_position_for_cast(&id);
+            let save_pos = self.active_group.as_ref().is_some_and(|g| {
+                g.windows.len() == 1 && g.windows.contains(&id)
+            });
+            workspace
+                .floating
+                .park_stage_position_for_cast(&id, save_pos);
             if let Some(active) = &mut self.active_group {
                 active.remove(&id);
                 if active.windows.is_empty() {
@@ -671,13 +686,24 @@ impl<W: LayoutElement> StageManagerState<W> {
             return false;
         }
 
-        workspace.floating.park_stage_position_for_cast(&id);
+        let was_parallel = self
+            .active_group
+            .as_ref()
+            .is_some_and(|g| g.windows.len() > 1);
+
+        workspace
+            .floating
+            .park_stage_position_for_cast(&id, !was_parallel);
 
         if let Some(active) = &mut self.active_group {
             active.remove(&id);
             if active.windows.is_empty() {
                 self.active_group = None;
             }
+        }
+
+        if was_parallel {
+            reset_managed_layout_defaults(workspace, self);
         }
 
         let key = workspace.window_stack_group_key(&id);
@@ -701,6 +727,19 @@ impl<W: LayoutElement> StageManagerState<W> {
     pub fn is_cast_window(&self, id: &W::Id) -> bool {
         self.cast_groups.iter().any(|g| g.contains(id))
             || self.hidden_groups.iter().any(|g| g.contains(id))
+    }
+
+    /// Two or more primary (non-dialog) windows share the main stage.
+    pub fn parallel_stage_active(&self, workspace: &Workspace<W>) -> bool {
+        let Some(group) = &self.active_group else {
+            return false;
+        };
+        group
+            .windows
+            .iter()
+            .filter(|id| !is_stage_child_overlay(workspace, self, id))
+            .count()
+            >= MAX_PARALLEL_STAGE
     }
 
     fn group_at_layout_index(&self, idx: usize) -> Option<&StageGroup<W>> {
@@ -751,13 +790,23 @@ impl<W: LayoutElement> StageManagerState<W> {
             return;
         }
 
+        let was_parallel = self
+            .active_group
+            .as_ref()
+            .is_some_and(|g| g.windows.len() > 1);
+
         Self::remove_from_group_list(&mut self.cast_groups, &id);
         Self::remove_from_group_list(&mut self.hidden_groups, &id);
-        self.demote_active_to_cast(workspace);
+        if was_parallel {
+            reset_managed_layout_defaults(workspace, self);
+        }
+        self.demote_active_to_cast(workspace, !was_parallel);
         Self::remove_from_group_list(&mut self.cast_groups, &id);
         Self::remove_from_group_list(&mut self.hidden_groups, &id);
 
-        workspace.floating.restore_stage_saved_position(&id);
+        if !was_parallel {
+            workspace.floating.restore_stage_saved_position(&id);
+        }
         self.active_group = Some(StageGroup::new(id));
         self.enforce_cast_limit(max_cast);
     }
@@ -784,10 +833,12 @@ impl<W: LayoutElement> StageManagerState<W> {
         }
     }
 
-    fn demote_active_to_cast(&mut self, workspace: &mut Workspace<W>) {
+    fn demote_active_to_cast(&mut self, workspace: &mut Workspace<W>, save_pos: bool) {
         if let Some(group) = self.active_group.take() {
             for win in group.windows {
-                workspace.floating.park_stage_position_for_cast(&win);
+                workspace
+                    .floating
+                    .park_stage_position_for_cast(&win, save_pos);
                 let key = workspace.window_stack_group_key(&win);
                 self.insert_into_cast(workspace, win, key);
             }
@@ -1115,6 +1166,10 @@ pub fn pointer_motion<W: LayoutElement>(
     state: &mut StageManagerState<W>,
     point: Point<f64, Logical>,
 ) -> bool {
+    if state.parallel_stage_active(workspace) {
+        return false;
+    }
+
     let working_area = workspace.working_area();
 
     let hovered = if pointer_in_stack_area(point, working_area, config) {
@@ -1149,6 +1204,12 @@ pub fn tick_auto_use_as_main<W: LayoutElement>(
         let had_state = state.interaction_target.is_some() || state.interaction_since.is_some();
         state.interaction_target = None;
         state.interaction_since = None;
+        return had_state;
+    }
+
+    if state.parallel_stage_active(workspace) {
+        let had_state = state.interaction_target.is_some() || state.interaction_since.is_some();
+        state.clear_auto_use_as_main_timer();
         return had_state;
     }
 
@@ -1270,6 +1331,15 @@ fn hit_test_cast_groups(
         rect.size += Size::from((CAST_HIT_PADDING * 2., CAST_HIT_PADDING * 2.));
         rect.contains(point).then_some(idx)
     })
+}
+
+fn reset_managed_layout_defaults<W: LayoutElement>(
+    workspace: &mut Workspace<W>,
+    state: &StageManagerState<W>,
+) {
+    for id in state.all_managed_windows() {
+        workspace.floating.clear_stage_manager_default_layout(&id);
+    }
 }
 
 fn reorganize<W: LayoutElement>(workspace: &mut Workspace<W>, state: &StageManagerState<W>) {
@@ -1514,9 +1584,7 @@ fn layout_cast_group_slot<W: LayoutElement>(
             return y_cursor;
         }
 
-        if !workspace.floating.has_user_position(front) {
-            set_strip_thumb_geometry(workspace, front, thumb_width, thumb_height, pos);
-        }
+        set_strip_thumb_geometry(workspace, front, thumb_width, thumb_height, pos);
         for id in group.windows.iter().skip(1) {
             move_to_floating(workspace, id);
             if workspace.floating.has_window(id) {
@@ -1552,9 +1620,7 @@ fn layout_cast_group_slot_horizontal<W: LayoutElement>(
             return x_cursor;
         }
 
-        if !workspace.floating.has_user_position(front) {
-            set_strip_thumb_geometry(workspace, front, thumb_width, thumb_height, pos);
-        }
+        set_strip_thumb_geometry(workspace, front, thumb_width, thumb_height, pos);
         for id in group.windows.iter().skip(1) {
             move_to_floating(workspace, id);
             if workspace.floating.has_window(id) {
@@ -1669,6 +1735,17 @@ fn apply_stage_geometry<W: LayoutElement>(
         } else {
             slot_width
         };
+
+        if n > 1 {
+            let size = Size::from((
+                window_width.round().max(1.) as i32,
+                cross_dim_default.round().max(1.) as i32,
+            ));
+            let x = stage_left + i as f64 * (slot_width + gap);
+            let y = stage_area.loc.y + (stage_inner_height - f64::from(size.h)) / 2.;
+            set_stage_window_geometry(workspace, id, size, Point::from((x, y)));
+            continue;
+        }
 
         let (avail_w, avail_h) = if vertical_stack {
             (window_width, cross_dim_default)

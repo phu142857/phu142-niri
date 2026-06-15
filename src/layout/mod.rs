@@ -1563,6 +1563,11 @@ impl<W: LayoutElement> Layout<W> {
             return true;
         }
 
+        let ws = &mon.workspaces[ws_idx];
+        if ws.stage_manager_parallel_active() {
+            return false;
+        }
+
         ws_idx == mon.active_workspace_idx
     }
 

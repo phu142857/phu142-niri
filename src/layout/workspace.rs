@@ -566,16 +566,27 @@ impl<W: LayoutElement> Workspace<W> {
     /// Window to focus when the pointer enters this workspace's monitor without clicking.
     pub fn focus_follows_mouse_monitor_target(&self) -> Option<W::Id> {
         if let Some(state) = &self.stage_manager {
-            if let Some(main) = state
-                .active_group
-                .as_ref()
-                .and_then(|group| group.windows.first())
-            {
+            if state.parallel_stage_active(self) {
+                return self.active_window().map(|w| w.id().clone());
+            }
+            if let Some(active) = self.active_window() {
+                let id = active.id().clone();
+                if state.is_stage_window(&id) {
+                    return Some(state.resolve_activation_target(self, &id));
+                }
+            }
+            if let Some(main) = state.active_group.as_ref().and_then(|group| group.windows.first()) {
                 return Some(state.resolve_activation_target(self, main));
             }
         }
 
         self.active_window().map(|w| w.id().clone())
+    }
+
+    pub fn stage_manager_parallel_active(&self) -> bool {
+        self.stage_manager
+            .as_ref()
+            .is_some_and(|state| state.parallel_stage_active(self))
     }
 
     pub fn active_window_mut(&mut self) -> Option<&mut W> {
@@ -2327,6 +2338,14 @@ impl<W: LayoutElement> Workspace<W> {
         if activated {
             self.stage_manager_fix_z_order_for(&target);
 
+            if self
+                .stage_manager
+                .as_ref()
+                .is_some_and(|state| state.is_stage_window(&target))
+            {
+                self.stage_manager_clear_interaction();
+            }
+
             if stage_switch {
                 self.apply_stage_manager_layout();
                 self.floating_is_active = FloatingActive::Yes;
@@ -2367,6 +2386,14 @@ impl<W: LayoutElement> Workspace<W> {
 
         if activated {
             self.stage_manager_fix_z_order_for(&target);
+
+            if self
+                .stage_manager
+                .as_ref()
+                .is_some_and(|state| state.is_stage_window(&target))
+            {
+                self.stage_manager_clear_interaction();
+            }
         }
 
         activated
