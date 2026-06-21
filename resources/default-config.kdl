@@ -72,12 +72,15 @@ input {
 // Full-screen viewport zoom (magnifier with realtime mouse panning).
 // Toggle with Mod+Shift+Z. While active: Mod+scroll to adjust scale;
 // Mod+Equal/Mod+Minus temporarily override set-column-width binds.
+// edge-pan: lock frame in place; pan only when pushing the cursor to a screen edge
+// (macOS Magnifier-style). Default off — omit the line or use `edge-pan false`.
 viewport-zoom {
     default-scale 1.5
     min-scale 1.0
-    max-scale 3.0
+    max-scale 64.0
     step 0.1
     wheel-step 0.05
+    // edge-pan
 }
 
 // You can configure outputs by their name, which you can find

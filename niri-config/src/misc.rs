@@ -163,6 +163,9 @@ pub struct ViewportZoom {
     pub step: f64,
     /// Scroll wheel step (with Mod held while zoom is active).
     pub wheel_step: f64,
+    /// When true, lock the magnified frame in place and pan only at the screen edges
+    /// (macOS Magnifier-style).
+    pub edge_pan: bool,
 }
 
 impl Default for ViewportZoom {
@@ -170,9 +173,10 @@ impl Default for ViewportZoom {
         Self {
             default_scale: 1.5,
             min_scale: 1.0,
-            max_scale: 3.0,
+            max_scale: 64.0,
             step: 0.1,
             wheel_step: 0.05,
+            edge_pan: false,
         }
     }
 }
@@ -180,37 +184,50 @@ impl Default for ViewportZoom {
 #[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]
 pub struct ViewportZoomPart {
     #[knuffel(child, unwrap(argument))]
-    pub default_scale: Option<FloatOrInt<1, 10>>,
+    pub default_scale: Option<FloatOrInt<1, 64>>,
     #[knuffel(child, unwrap(argument))]
-    pub min_scale: Option<FloatOrInt<1, 10>>,
+    pub min_scale: Option<FloatOrInt<1, 64>>,
     #[knuffel(child, unwrap(argument))]
-    pub max_scale: Option<FloatOrInt<1, 10>>,
+    pub max_scale: Option<FloatOrInt<1, 64>>,
     #[knuffel(child, unwrap(argument))]
     pub step: Option<FloatOrInt<0, 1>>,
     #[knuffel(child, unwrap(argument))]
     pub wheel_step: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child)]
+    pub edge_pan: Option<Flag>,
+    /// Ignored (removed).
+    #[knuffel(child, unwrap(argument))]
+    pub edge_margin: Option<FloatOrInt<0, 4096>>,
+    /// Ignored (removed).
+    #[knuffel(child, unwrap(argument))]
+    pub dead_zone_width: Option<FloatOrInt<0, 4096>>,
+    /// Ignored (removed).
+    #[knuffel(child, unwrap(argument))]
+    pub dead_zone_height: Option<FloatOrInt<0, 4096>>,
 }
 
 impl MergeWith<ViewportZoomPart> for ViewportZoom {
     fn merge_with(&mut self, part: &ViewportZoomPart) {
-        if let Some(v) = part.default_scale {
+        // Ignore 0.0 from failed parses (knuffel emits an error and substitutes default).
+        if let Some(v) = part.default_scale.filter(|v| v.0 > 0.) {
             self.default_scale = v.0;
         }
-        if let Some(v) = part.min_scale {
+        if let Some(v) = part.min_scale.filter(|v| v.0 > 0.) {
             self.min_scale = v.0;
         }
-        if let Some(v) = part.max_scale {
+        if let Some(v) = part.max_scale.filter(|v| v.0 > 0.) {
             self.max_scale = v.0;
         }
-        if let Some(v) = part.step {
+        if let Some(v) = part.step.filter(|v| v.0 > 0.) {
             self.step = v.0;
         }
-        if let Some(v) = part.wheel_step {
+        if let Some(v) = part.wheel_step.filter(|v| v.0 > 0.) {
             self.wheel_step = v.0;
         }
+        merge!((self, part), edge_pan);
+        self.min_scale = self.min_scale.clamp(1.0, 64.0);
+        self.max_scale = self.max_scale.clamp(self.min_scale, 64.0);
         self.default_scale = self.default_scale.clamp(self.min_scale, self.max_scale);
-        self.min_scale = self.min_scale.clamp(1.0, self.max_scale);
-        self.max_scale = self.max_scale.max(self.min_scale);
     }
 }
 

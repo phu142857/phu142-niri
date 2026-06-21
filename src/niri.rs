@@ -3780,6 +3780,7 @@ impl Niri {
     }
 
     pub fn viewport_zoom_pointer_motion(&mut self, output: &Output, pos: Point<f64, Logical>) -> bool {
+        let config = self.config.borrow().viewport_zoom;
         let Some(state) = self.output_state.get_mut(output) else {
             return false;
         };
@@ -3787,7 +3788,9 @@ impl Niri {
             return false;
         }
         let old = state.viewport_zoom.pan;
-        state.viewport_zoom.update_pan_for_pointer(output, pos);
+        state
+            .viewport_zoom
+            .update_pan_for_pointer(&config, output, pos);
         old != state.viewport_zoom.pan
     }
 
@@ -4355,7 +4358,7 @@ impl Niri {
             push
         };
 
-        // The pointer goes on the top.
+        // The pointer goes on the top (via the DRM cursor plane when available).
         if include_pointer && self.pointer_visibility.is_visible() {
             self.render_pointer(ctx.renderer, output, &mut |elem| push(elem.into()));
         }

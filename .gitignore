@@ -7,7 +7,11 @@
 .cursor/
 .agents/
 .claude/
+
+# CodeGraph (local index/cache, per-machine)
 .codegraph/
+codegraph.db
+codegraph.db-*
 
 # Agent instruction files (local)
 AGENTS.md
