@@ -69,6 +69,17 @@ input {
     // focus-follows-mouse max-scroll-amount="0%"
 }
 
+// Full-screen viewport zoom (magnifier with realtime mouse panning).
+// Toggle with Mod+Shift+Z. While active: Mod+scroll to adjust scale;
+// Mod+Equal/Mod+Minus temporarily override set-column-width binds.
+viewport-zoom {
+    default-scale 1.5
+    min-scale 1.0
+    max-scale 3.0
+    step 0.1
+    wheel-step 0.05
+}
+
 // You can configure outputs by their name, which you can find
 // by running `niri msg outputs` while inside a niri instance.
 // The built-in laptop monitor is usually called "eDP-1".
@@ -402,6 +413,10 @@ binds {
     // Stage Manager (requires `stage-manager { }` in layout).
     Mod+G { stage-manager-toggle-main; }
     Mod+Shift+G { stage-manager-promote-parallel; }
+
+    // Full-screen viewport zoom (magnifier with mouse panning).
+    // While active: Mod+scroll to adjust scale; Mod+Equal/Mod+Minus override column-width binds.
+    Mod+Shift+Z { toggle-viewport-zoom; }
 
     Mod+Q repeat=false { close-window; }
 

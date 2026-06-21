@@ -177,6 +177,7 @@ use crate::utils::spawning::{CHILD_DISPLAY, CHILD_ENV};
 use crate::utils::vblank_throttle::VBlankThrottle;
 use crate::utils::watcher::Watcher;
 use crate::utils::xwayland::satellite::Satellite;
+use crate::viewport_zoom::ViewportZoomState;
 use crate::utils::{
     center, center_f64, expand_home, get_monotonic_time, ipc_transform_to_smithay, is_mapped,
     logical_output, make_screenshot_path, output_matches_name, output_size, panel_orientation,
@@ -486,6 +487,8 @@ pub struct OutputState {
     screen_transition: Option<ScreenTransition>,
     /// Damage tracker used for the debug damage visualization.
     pub debug_damage_tracker: OutputDamageTracker,
+    /// Full-screen viewport zoom (magnifier) state.
+    pub viewport_zoom: ViewportZoomState,
 }
 
 #[derive(Debug, Default)]
@@ -2903,6 +2906,7 @@ impl Niri {
             lock_color_buffer: SolidColorBuffer::new(size, CLEAR_COLOR_LOCKED),
             screen_transition: None,
             debug_damage_tracker: OutputDamageTracker::from_output(&output),
+            viewport_zoom: ViewportZoomState::default(),
         };
         let rv = self.output_state.insert(output.clone(), state);
         assert!(rv.is_none(), "output was already tracked");
@@ -3317,6 +3321,17 @@ impl Niri {
         rv.output = Some(output.clone());
         let output_pos_in_global_space = self.global_space.output_geometry(output).unwrap().loc;
 
+        let screen_pos_within_output = pos_within_output;
+        let content_pos_within_output = if let Some(st) = self.output_state.get(&output) {
+            if st.viewport_zoom.active {
+                st.viewport_zoom.screen_to_world(screen_pos_within_output)
+            } else {
+                screen_pos_within_output
+            }
+        } else {
+            screen_pos_within_output
+        };
+
         // The ordering here must be consistent with the ordering in render() so that input is
         // consistent with the visuals.
 
@@ -3332,7 +3347,7 @@ impl Niri {
 
             rv.surface = under_from_surface_tree(
                 surface.wl_surface(),
-                pos_within_output,
+                screen_pos_within_output,
                 // We put lock surfaces at (0, 0).
                 (0, 0),
                 WindowSurfaceType::ALL,
@@ -3352,6 +3367,7 @@ impl Niri {
         }
 
         let layers = layer_map_for_output(output);
+        let content_pos = content_pos_within_output;
         let layer_surface_under = |layer, popup| {
             layers
                 .layers_on(layer)
@@ -3369,7 +3385,7 @@ impl Niri {
                     // Background and bottom layers move together with the workspaces.
                     if matches!(layer, Layer::Background | Layer::Bottom) {
                         let mon = self.layout.monitor_for_output(output)?;
-                        let (_, geo) = mon.workspace_under(pos_within_output)?;
+                        let (_, geo) = mon.workspace_under(content_pos)?;
                         layer_pos_within_output += geo.loc;
                         // Don't need to deal with zoom here because in the overview background and
                         // bottom layers don't receive input.
@@ -3382,7 +3398,7 @@ impl Niri {
                     } | WindowSurfaceType::SUBSURFACE;
 
                     layer_surface
-                        .surface_under(pos_within_output - layer_pos_within_output, surface_type)
+                        .surface_under(content_pos - layer_pos_within_output, surface_type)
                         .map(|(surface, pos_within_layer)| {
                             (
                                 (surface, pos_within_layer.to_f64() + layer_pos_within_output),
@@ -3402,7 +3418,7 @@ impl Niri {
                 let win_pos_within_output = win_pos;
                 window
                     .surface_under(
-                        pos_within_output - win_pos_within_output,
+                        content_pos - win_pos_within_output,
                         WindowSurfaceType::ALL,
                     )
                     .map(|(s, pos_within_window)| {
@@ -3416,12 +3432,12 @@ impl Niri {
 
         let interactive_moved_window_under = || {
             self.layout
-                .interactive_moved_window_under(output, pos_within_output)
+                .interactive_moved_window_under(output, content_pos)
                 .map(mapped_hit_data)
         };
         let window_under = || {
             self.layout
-                .window_under(output, pos_within_output)
+                .window_under(output, content_pos)
                 .map(mapped_hit_data)
         };
 
@@ -3445,7 +3461,7 @@ impl Niri {
                 .or_else(|| layer_toplevel_under(Layer::Bottom))
                 .or_else(|| layer_toplevel_under(Layer::Background));
         } else {
-            if self.is_inside_hot_corner(output, pos_within_output) {
+            if self.is_inside_hot_corner(output, screen_pos_within_output) {
                 rv.hot_corner = true;
                 return rv;
             }
@@ -3694,6 +3710,109 @@ impl Niri {
     pub fn queue_redraw(&mut self, output: &Output) {
         let state = self.output_state.get_mut(output).unwrap();
         state.redraw_state = mem::take(&mut state.redraw_state).queue_redraw();
+    }
+
+    /// Stop an in-progress keybind repeat (e.g. when leaving viewport zoom mode).
+    pub fn stop_bind_repeat(&mut self) {
+        if let Some(token) = self.bind_repeat_timer.take() {
+            self.event_loop.remove(token);
+        }
+    }
+
+    pub fn toggle_viewport_zoom(&mut self) {
+        let pointer = self.seat.get_pointer().unwrap().current_location();
+        let Some((output, pos)) = self.output_under(pointer) else {
+            return;
+        };
+        let output = output.clone();
+        let config = self.config.borrow().viewport_zoom;
+        let was_active = self
+            .output_state
+            .get(&output)
+            .is_some_and(|s| s.viewport_zoom.active);
+        {
+            let state = self.output_state.get_mut(&output).unwrap();
+            state.viewport_zoom.toggle(&config, &output, pos);
+        }
+        if was_active {
+            self.stop_bind_repeat();
+        }
+        self.queue_redraw(&output);
+    }
+
+    pub fn viewport_zoom_in(&mut self) {
+        self.adjust_viewport_zoom(true);
+    }
+
+    pub fn viewport_zoom_out(&mut self) {
+        self.adjust_viewport_zoom(false);
+    }
+
+    fn adjust_viewport_zoom(&mut self, zoom_in: bool) {
+        let pointer = self.seat.get_pointer().unwrap().current_location();
+        let Some((output, pos)) = self.output_under(pointer) else {
+            return;
+        };
+        let output = output.clone();
+        let config = self.config.borrow().viewport_zoom;
+        {
+            let state = self.output_state.get_mut(&output).unwrap();
+            if !state.viewport_zoom.active {
+                return;
+            }
+            if zoom_in {
+                state.viewport_zoom.zoom_in(&config, &output, pos);
+            } else {
+                state.viewport_zoom.zoom_out(&config, &output, pos);
+            }
+        }
+        self.queue_redraw(&output);
+    }
+
+    pub fn viewport_zoom_scroll(&mut self, output: &Output, pos: Point<f64, Logical>, delta: f64) {
+        let config = self.config.borrow().viewport_zoom;
+        let state = self.output_state.get_mut(output).unwrap();
+        if !state.viewport_zoom.active {
+            return;
+        }
+        state.viewport_zoom.scroll_zoom(&config, output, pos, delta);
+        self.queue_redraw(output);
+    }
+
+    pub fn viewport_zoom_pointer_motion(&mut self, output: &Output, pos: Point<f64, Logical>) -> bool {
+        let Some(state) = self.output_state.get_mut(output) else {
+            return false;
+        };
+        if !state.viewport_zoom.active {
+            return false;
+        }
+        let old = state.viewport_zoom.pan;
+        state.viewport_zoom.update_pan_for_pointer(output, pos);
+        old != state.viewport_zoom.pan
+    }
+
+    pub fn viewport_zoom_active_on_output(&self, output: &Output) -> bool {
+        self.output_state
+            .get(output)
+            .is_some_and(|s| s.viewport_zoom.active)
+    }
+
+    pub fn stage_manager_and_viewport_pointer_motion(
+        &mut self,
+        output: &Output,
+        screen_pos: Point<f64, Logical>,
+    ) {
+        let content_pos = self
+            .output_state
+            .get(output)
+            .filter(|s| s.viewport_zoom.active)
+            .map(|s| s.viewport_zoom.screen_to_world(screen_pos))
+            .unwrap_or(screen_pos);
+        self.layout
+            .stage_manager_pointer_motion(output, content_pos);
+        if self.viewport_zoom_pointer_motion(output, screen_pos) {
+            self.queue_redraw(output);
+        }
     }
 
     pub fn redraw_queued_outputs(&mut self, backend: &mut Backend) {
@@ -4321,6 +4440,7 @@ impl Niri {
         // Get monitor elements.
         let mon = self.layout.monitor_for_output(output).unwrap();
         let zoom = mon.overview_zoom();
+        let viewport_zoom = state.viewport_zoom;
 
         // Get layer-shell elements.
         let layer_map = layer_map_for_output(output);
@@ -4392,7 +4512,7 @@ impl Niri {
 
             mon.render_insert_hint_between_workspaces(ctx.renderer, &mut |elem| push(elem.into()));
 
-            mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
+            mon.render_workspaces(ctx.r(), focus_ring, viewport_zoom, &mut |elem| push(elem.into()));
 
             push_popups_from_layer!(Layer::Top);
             push_normal_from_layer!(Layer::Top);
@@ -4419,7 +4539,7 @@ impl Niri {
             macro_rules! process {
                 ($geo:expr) => {{
                     &mut |elem| {
-                        if let Some(elem) = scale_relocate_crop(elem, output_scale, zoom, $geo) {
+                        if let Some(elem) = scale_relocate_crop(elem, output_scale, zoom, $geo, viewport_zoom) {
                             push(elem.into());
                         }
                     }
@@ -4433,7 +4553,7 @@ impl Niri {
                 push_popups_from_layer!(Layer::Background, ns, xray_pos, process!(geo));
             }
 
-            mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
+            mon.render_workspaces(ctx.r(), focus_ring, viewport_zoom, &mut |elem| push(elem.into()));
 
             for (ws, geo) in mon.workspaces_with_render_geo() {
                 // The render element namespace. This will be set to the workspace index for
@@ -6519,7 +6639,10 @@ fn scale_relocate_crop<E: Element>(
     output_scale: Scale<f64>,
     zoom: f64,
     ws_geo: Rectangle<f64, Logical>,
+    viewport: crate::viewport_zoom::ViewportZoomState,
 ) -> Option<CropRenderElement<RelocateRenderElement<RescaleRenderElement<E>>>> {
+    let ws_geo = viewport.transform_geo(ws_geo);
+    let zoom = viewport.multiply_zoom(zoom);
     let ws_geo = ws_geo.to_physical_precise_round(output_scale);
     let elem = RescaleRenderElement::from_element(elem, Point::from((0, 0)), zoom);
     let elem = RelocateRenderElement::from_element(elem, ws_geo.loc, Relocate::Relative);

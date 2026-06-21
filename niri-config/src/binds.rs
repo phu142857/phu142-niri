@@ -369,6 +369,12 @@ pub enum Action {
     StageManagerToggleMain,
     /// Stage Manager: show focused cast app in parallel on stage.
     StageManagerPromoteParallel,
+    /// Toggle full-screen viewport zoom (magnifier).
+    ToggleViewportZoom,
+    /// Increase viewport zoom scale (while zoom is active).
+    ViewportZoomIn,
+    /// Decrease viewport zoom scale (while zoom is active).
+    ViewportZoomOut,
     #[knuffel(skip)]
     ToggleWindowUrgent(u64),
     #[knuffel(skip)]

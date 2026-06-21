@@ -23,6 +23,7 @@ pub mod rubber_band;
 pub mod screencasting;
 pub mod ui;
 pub mod utils;
+pub mod viewport_zoom;
 pub mod window;
 
 #[cfg(test)]

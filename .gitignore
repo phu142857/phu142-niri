@@ -2,3 +2,19 @@
 /result
 
 .idea
+
+# Cursor / AI agent tooling (local, per-machine)
+.cursor/
+.agents/
+.claude/
+.codegraph/
+
+# Agent instruction files (local)
+AGENTS.md
+AGENT.md
+AGENT/
+
+# MCP (Model Context Protocol) config
+.mcp/
+mcp.json
+**/mcp.json

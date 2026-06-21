@@ -152,6 +152,68 @@ impl MergeWith<OverviewPart> for Overview {
     }
 }
 
+/// Full-screen viewport zoom (magnifier) settings.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewportZoom {
+    /// Scale applied when toggling zoom on.
+    pub default_scale: f64,
+    pub min_scale: f64,
+    pub max_scale: f64,
+    /// Keyboard +/- step.
+    pub step: f64,
+    /// Scroll wheel step (with Mod held while zoom is active).
+    pub wheel_step: f64,
+}
+
+impl Default for ViewportZoom {
+    fn default() -> Self {
+        Self {
+            default_scale: 1.5,
+            min_scale: 1.0,
+            max_scale: 3.0,
+            step: 0.1,
+            wheel_step: 0.05,
+        }
+    }
+}
+
+#[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]
+pub struct ViewportZoomPart {
+    #[knuffel(child, unwrap(argument))]
+    pub default_scale: Option<FloatOrInt<1, 10>>,
+    #[knuffel(child, unwrap(argument))]
+    pub min_scale: Option<FloatOrInt<1, 10>>,
+    #[knuffel(child, unwrap(argument))]
+    pub max_scale: Option<FloatOrInt<1, 10>>,
+    #[knuffel(child, unwrap(argument))]
+    pub step: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child, unwrap(argument))]
+    pub wheel_step: Option<FloatOrInt<0, 1>>,
+}
+
+impl MergeWith<ViewportZoomPart> for ViewportZoom {
+    fn merge_with(&mut self, part: &ViewportZoomPart) {
+        if let Some(v) = part.default_scale {
+            self.default_scale = v.0;
+        }
+        if let Some(v) = part.min_scale {
+            self.min_scale = v.0;
+        }
+        if let Some(v) = part.max_scale {
+            self.max_scale = v.0;
+        }
+        if let Some(v) = part.step {
+            self.step = v.0;
+        }
+        if let Some(v) = part.wheel_step {
+            self.wheel_step = v.0;
+        }
+        self.default_scale = self.default_scale.clamp(self.min_scale, self.max_scale);
+        self.min_scale = self.min_scale.clamp(1.0, self.max_scale);
+        self.max_scale = self.max_scale.max(self.min_scale);
+    }
+}
+
 #[derive(knuffel::Decode, Debug, Default, Clone, PartialEq, Eq)]
 pub struct Environment(#[knuffel(children)] pub Vec<EnvironmentVariable>);
 

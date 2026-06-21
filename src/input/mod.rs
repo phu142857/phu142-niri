@@ -582,6 +582,8 @@ impl State {
             return;
         }
 
+        let bind = override_bind_for_viewport_zoom(&self.niri, bind);
+
         self.handle_bind(bind.clone());
 
         self.start_key_repeat(bind);
@@ -2288,6 +2290,15 @@ impl State {
                     self.niri.queue_redraw_all();
                 }
             }
+            Action::ToggleViewportZoom => {
+                self.niri.toggle_viewport_zoom();
+            }
+            Action::ViewportZoomIn => {
+                self.niri.viewport_zoom_in();
+            }
+            Action::ViewportZoomOut => {
+                self.niri.viewport_zoom_out();
+            }
             Action::OpenOverview => {
                 if self.niri.layout.open_overview() {
                     self.niri.queue_redraw_all();
@@ -2582,8 +2593,7 @@ impl State {
             .map(|(output, pos)| (output.clone(), pos));
         if let Some((output, pos_within_output)) = stage_pointer {
             self.niri
-                .layout
-                .stage_manager_pointer_motion(&output, pos_within_output);
+                .stage_manager_and_viewport_pointer_motion(&output, pos_within_output);
         }
 
         // Handle confined pointer.
@@ -2725,8 +2735,7 @@ impl State {
             .map(|(output, p)| (output.clone(), p));
         if let Some((output, pos_within_output)) = stage_pointer {
             self.niri
-                .layout
-                .stage_manager_pointer_motion(&output, pos_within_output);
+                .stage_manager_and_viewport_pointer_motion(&output, pos_within_output);
         }
 
         self.niri.pointer_contents.clone_from(&under);
@@ -3158,6 +3167,24 @@ impl State {
         };
 
         let is_mru_open = self.niri.window_mru_ui.is_open();
+
+        // Viewport zoom: Mod + scroll wheel adjusts scale while zoom is active.
+        if source == AxisSource::Wheel {
+            let mods = self.niri.seat.get_keyboard().unwrap().modifier_state();
+            let modifiers = modifiers_from_state(mods);
+            if modifiers.contains(mod_key.to_modifiers()) {
+                let pointer_pos = self.niri.seat.get_pointer().unwrap().current_location();
+                if let Some((output, pos)) = self.niri.output_under(pointer_pos) {
+                    let output = output.clone();
+                    if self.niri.viewport_zoom_active_on_output(&output) {
+                        let delta = vertical_amount_v120.unwrap_or(0.) / 120.;
+                        self.niri.viewport_zoom_scroll(&output, pos, delta);
+                        pointer.frame(self);
+                        return;
+                    }
+                }
+            }
+        }
 
         // Handle wheel scroll bindings.
         if source == AxisSource::Wheel {
@@ -4789,6 +4816,29 @@ fn allowed_during_screenshot(action: &Action) -> bool {
             | Action::SetWindowHeight(_)
             | Action::SetColumnWidth(_)
     )
+}
+
+/// When viewport zoom is active, remap Mod+Equal/Mod+Minus to zoom in/out instead of
+/// whatever they are bound to (e.g. set-column-width). When zoom is off, the original bind
+/// is returned unchanged — no persistent override state.
+fn override_bind_for_viewport_zoom(niri: &crate::niri::Niri, bind: Bind) -> Bind {
+    let Some(output) = niri.output_under_cursor() else {
+        return bind;
+    };
+    if !niri.viewport_zoom_active_on_output(&output) {
+        return bind;
+    }
+
+    let action = match bind.key.trigger {
+        Trigger::Keysym(sym) => match sym {
+            Keysym::equal | Keysym::plus | Keysym::KP_Add => Action::ViewportZoomIn,
+            Keysym::minus | Keysym::underscore | Keysym::KP_Subtract => Action::ViewportZoomOut,
+            _ => return bind,
+        },
+        _ => return bind,
+    };
+
+    Bind { action, ..bind }
 }
 
 fn hardcoded_overview_bind(raw: Keysym, mods: ModifiersState) -> Option<Bind> {
