@@ -1569,6 +1569,7 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         ws_idx == mon.active_workspace_idx
+            && !ws.is_active_pending_fullscreen()
     }
 
     pub fn is_interactive_move_active(&self) -> bool {

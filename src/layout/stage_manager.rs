@@ -1131,7 +1131,7 @@ pub fn scroll_cast<W: LayoutElement>(
     state: &mut StageManagerState<W>,
     delta_y: f64,
 ) -> bool {
-    if delta_y == 0. {
+    if delta_y == 0. || workspace.is_active_pending_fullscreen() {
         return false;
     }
 
@@ -1170,6 +1170,12 @@ pub fn pointer_motion<W: LayoutElement>(
         return false;
     }
 
+    // Hovering the cast strip must not reorganize layout while the main stage window is
+    // fullscreen — reorganize() would pull it out of the scrolling layout.
+    if workspace.is_active_pending_fullscreen() {
+        return false;
+    }
+
     let working_area = workspace.working_area();
 
     let hovered = if pointer_in_stack_area(point, working_area, config) {
@@ -1197,6 +1203,12 @@ pub fn tick_auto_use_as_main<W: LayoutElement>(
         let had_state = state.interaction_target.is_some() || state.interaction_since.is_some();
         state.interaction_target = None;
         state.interaction_since = None;
+        return had_state;
+    }
+
+    if workspace.is_active_pending_fullscreen() {
+        let had_state = state.interaction_target.is_some() || state.interaction_since.is_some();
+        state.clear_auto_use_as_main_timer();
         return had_state;
     }
 
@@ -1349,6 +1361,15 @@ fn reorganize<W: LayoutElement>(workspace: &mut Workspace<W>, state: &StageManag
 }
 
 fn move_to_floating<W: LayoutElement>(workspace: &mut Workspace<W>, id: &W::Id) {
+    if workspace.is_active_pending_fullscreen()
+        && workspace
+            .scrolling
+            .active_window()
+            .is_some_and(|w| w.id() == id)
+    {
+        return;
+    }
+
     if !workspace.floating.has_window(id) && workspace.scrolling.contains_window(id) {
         let mut removed = workspace.scrolling.remove_tile(id, Transaction::new());
         removed.tile.stop_move_animations();

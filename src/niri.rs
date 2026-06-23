@@ -762,9 +762,20 @@ impl State {
         drop(config);
 
         let mods = self.niri.seat.get_keyboard().unwrap().modifier_state();
+        let pointer = self.niri.seat.get_pointer().unwrap().current_location();
+        let fullscreen_on_pointer_output = self
+            .niri
+            .output_under(pointer)
+            .is_some_and(|(output, _)| {
+                self.niri
+                    .layout
+                    .monitor_for_output(&output)
+                    .is_some_and(|mon| mon.active_workspace_ref().is_active_pending_fullscreen())
+            });
         let suppress = modifiers_from_state(mods).contains(mod_key.to_modifiers())
             || self.niri.window_mru_ui.is_open()
-            || self.niri.layout.is_interactive_move_active();
+            || self.niri.layout.is_interactive_move_active()
+            || fullscreen_on_pointer_output;
         self.niri
             .layout
             .set_stage_manager_suppress_auto_use_as_main(suppress);
