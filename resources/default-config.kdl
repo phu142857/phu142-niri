@@ -416,6 +416,7 @@ binds {
     // Stage Manager (requires `stage-manager { }` in layout).
     Mod+G { stage-manager-toggle-main; }
     Mod+Shift+G { stage-manager-promote-parallel; }
+    Mod+C { stage-manager-reset-main-layout; }
 
     // Full-screen viewport zoom (magnifier with mouse panning).
     // While active: Mod+scroll to adjust scale; Mod+Equal/Mod+Minus override column-width binds.

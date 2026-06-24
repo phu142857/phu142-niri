@@ -1917,6 +1917,13 @@ impl<W: LayoutElement> Layout<W> {
         })
     }
 
+    pub fn stage_manager_reset_main_layout(&mut self) -> bool {
+        let Some(ws) = self.active_workspace_mut() else {
+            return false;
+        };
+        ws.stage_manager_reset_main_layout()
+    }
+
     fn stage_manager_action_on_window(
         &mut self,
         window: &W::Id,

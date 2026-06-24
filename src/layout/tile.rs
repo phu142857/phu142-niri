@@ -134,6 +134,10 @@ pub struct Tile<W: LayoutElement> {
     /// Remembered stage position for Stage Manager (survives strip ↔ stage moves).
     stage_manager_saved_pos: Option<Point<f64, SizeFrac>>,
 
+    /// Layout when the window was first placed on the main stage (for reset).
+    stage_manager_initial_size: Option<Size<i32, Logical>>,
+    stage_manager_initial_pos: Option<Point<f64, SizeFrac>>,
+
     /// Parked off-screen: not rendered and not hit-tested (cast group siblings).
     stage_manager_strip_inert: bool,
 }
@@ -244,6 +248,8 @@ impl<W: LayoutElement> Tile<W> {
             stage_manager_thumb: None,
             stage_manager_saved_size: None,
             stage_manager_saved_pos: None,
+            stage_manager_initial_size: None,
+            stage_manager_initial_pos: None,
             stage_manager_strip_inert: false,
         }
     }
@@ -280,6 +286,22 @@ impl<W: LayoutElement> Tile<W> {
 
     pub fn stage_manager_saved_pos(&self) -> Option<Point<f64, SizeFrac>> {
         self.stage_manager_saved_pos
+    }
+
+    pub fn set_stage_manager_initial_size(&mut self, size: Option<Size<i32, Logical>>) {
+        self.stage_manager_initial_size = size;
+    }
+
+    pub fn stage_manager_initial_size(&self) -> Option<Size<i32, Logical>> {
+        self.stage_manager_initial_size
+    }
+
+    pub fn set_stage_manager_initial_pos(&mut self, pos: Option<Point<f64, SizeFrac>>) {
+        self.stage_manager_initial_pos = pos;
+    }
+
+    pub fn stage_manager_initial_pos(&self) -> Option<Point<f64, SizeFrac>> {
+        self.stage_manager_initial_pos
     }
 
     pub fn update_config(

@@ -369,6 +369,8 @@ pub enum Action {
     StageManagerToggleMain,
     /// Stage Manager: show focused cast app in parallel on stage.
     StageManagerPromoteParallel,
+    /// Stage Manager: reset main-stage layout to initial or config defaults.
+    StageManagerResetMainLayout,
     /// Toggle full-screen viewport zoom (magnifier).
     ToggleViewportZoom,
     /// Increase viewport zoom scale (while zoom is active).

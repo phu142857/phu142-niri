@@ -908,6 +908,40 @@ pub fn apply<W: LayoutElement>(
     apply_geometry(workspace, config, state);
 }
 
+/// Reset main-stage windows to their first layout, or to config defaults.
+pub fn reset_main_layout<W: LayoutElement>(
+    workspace: &mut Workspace<W>,
+    state: &StageManagerState<W>,
+) -> bool {
+    let Some(group) = &state.active_group else {
+        return false;
+    };
+
+    let primary: Vec<_> = group
+        .windows
+        .iter()
+        .filter(|id| !is_stage_child_overlay(workspace, state, id))
+        .cloned()
+        .collect();
+
+    if primary.is_empty() {
+        return false;
+    }
+
+    if state.parallel_stage_active(workspace) {
+        for id in &group.windows {
+            workspace.floating.reset_stage_manager_main_layout(id);
+        }
+        return true;
+    }
+
+    for id in &group.windows {
+        workspace.floating.reset_stage_manager_main_layout(id);
+    }
+
+    true
+}
+
 /// Stack and stage regions derived from config.
 #[derive(Debug, Clone, Copy)]
 struct StageAreas {
@@ -1731,15 +1765,15 @@ fn apply_stage_geometry<W: LayoutElement>(
     let gap = workspace.options.layout.gaps;
     let total_gap = gap * (n.saturating_sub(1)) as f64;
     let stage_left = stage_area.loc.x;
-    let stage_right = stage_area.loc.x + stage_area.size.w;
     let stage_inner_width = stage_area.size.w.max(1.);
     let stage_inner_height = stage_area.size.h;
-    let slot_width = (stage_inner_width - total_gap) / n as f64;
     let vertical_stack = config.stack_position.is_vertical();
+    let stage_height_default = (config.target_stage_height() - pad).max(1.);
+    let stage_width_default = (config.target_stage_width() - pad).max(1.);
     let cross_dim_default = if vertical_stack {
-        (config.target_stage_height() - pad).max(1.)
+        stage_height_default
     } else {
-        (config.target_stage_width() - pad).max(1.)
+        stage_width_default
     };
 
     for id in &group.windows {
@@ -1751,22 +1785,40 @@ fn apply_stage_geometry<W: LayoutElement>(
             continue;
         }
 
+        if n > 1 {
+            let (main_span, cross_span, main_offset) = if vertical_stack {
+                (stage_inner_width, stage_height_default, 0.)
+            } else {
+                (
+                    stage_width_default,
+                    stage_height_default,
+                    (stage_inner_width - stage_width_default) / 2.,
+                )
+            };
+            let slot_width = (main_span - total_gap) / n as f64;
+            let main_left = stage_left + main_offset;
+            let window_width = if i + 1 == n {
+                (main_left + main_span - (main_left + i as f64 * (slot_width + gap))).max(1.)
+            } else {
+                slot_width
+            };
+            let size = Size::from((
+                window_width.round().max(1.) as i32,
+                cross_span.round().max(1.) as i32,
+            ));
+            let x = main_left + i as f64 * (slot_width + gap);
+            let y = stage_area.loc.y + (stage_inner_height - f64::from(size.h)) / 2.;
+            set_stage_window_geometry(workspace, id, size, Point::from((x, y)));
+            continue;
+        }
+
+        let slot_width = (stage_inner_width - total_gap) / n as f64;
+        let stage_right = stage_area.loc.x + stage_area.size.w;
         let window_width = if i + 1 == n {
             (stage_right - (stage_left + i as f64 * (slot_width + gap))).max(1.)
         } else {
             slot_width
         };
-
-        if n > 1 {
-            let size = Size::from((
-                window_width.round().max(1.) as i32,
-                cross_dim_default.round().max(1.) as i32,
-            ));
-            let x = stage_left + i as f64 * (slot_width + gap);
-            let y = stage_area.loc.y + (stage_inner_height - f64::from(size.h)) / 2.;
-            set_stage_window_geometry(workspace, id, size, Point::from((x, y)));
-            continue;
-        }
 
         let (avail_w, avail_h) = if vertical_stack {
             (window_width, cross_dim_default)
@@ -1790,15 +1842,20 @@ fn apply_stage_geometry<W: LayoutElement>(
             continue;
         }
 
-        let x = if vertical_stack {
-            stage_left + i as f64 * (slot_width + gap)
+        let pos = if let Some(frac) = workspace.floating.stage_manager_saved_pos(id) {
+            workspace.floating.scale_by_working_area(frac)
         } else {
-            stage_left
-                + i as f64 * (slot_width + gap)
-                + (slot_width - f64::from(size.w)) / 2.
+            let x = if vertical_stack {
+                stage_left + i as f64 * (slot_width + gap)
+            } else {
+                stage_left
+                    + i as f64 * (slot_width + gap)
+                    + (slot_width - f64::from(size.w)) / 2.
+            };
+            let y = stage_area.loc.y + (stage_inner_height - f64::from(size.h)) / 2.;
+            Point::from((x, y))
         };
-        let y = stage_area.loc.y + (stage_inner_height - f64::from(size.h)) / 2.;
-        set_stage_window_geometry(workspace, id, size, Point::from((x, y)));
+        set_stage_window_geometry(workspace, id, size, pos);
     }
 }
 
@@ -1854,6 +1911,9 @@ fn set_stage_window_geometry<W: LayoutElement>(
     size: Size<i32, Logical>,
     pos: Point<f64, Logical>,
 ) {
+    workspace
+        .floating
+        .snapshot_stage_manager_initial_if_needed(id, size, pos);
     workspace.floating.clear_user_position(id);
     workspace.floating.clear_stage_manager_thumb(id);
     workspace

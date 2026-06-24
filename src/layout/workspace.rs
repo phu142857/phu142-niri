@@ -2263,6 +2263,31 @@ impl<W: LayoutElement> Workspace<W> {
         self.stage_manager_apply_action(window, changed)
     }
 
+    pub fn stage_manager_reset_main_layout(&mut self) -> bool {
+        if self.options.layout.stage_manager.is_none() {
+            return false;
+        }
+
+        if self.stage_manager.is_none() {
+            self.stage_manager =
+                Some(super::stage_manager::StageManagerState::from_workspace(self));
+        }
+
+        let Some(state) = self.stage_manager.take() else {
+            return false;
+        };
+
+        let changed = super::stage_manager::reset_main_layout(self, &state);
+        self.stage_manager = Some(state);
+
+        if changed {
+            self.floating_is_active = FloatingActive::Yes;
+            self.apply_stage_manager_layout();
+        }
+
+        changed
+    }
+
     pub fn stage_manager_promote_cast(&mut self, window: &W::Id) -> bool {
         let stage_switch = if self.options.layout.stage_manager.is_some() {
             self.stage_manager_save_active_sizes();

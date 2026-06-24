@@ -2290,6 +2290,11 @@ impl State {
                     self.niri.queue_redraw_all();
                 }
             }
+            Action::StageManagerResetMainLayout => {
+                if self.niri.layout.stage_manager_reset_main_layout() {
+                    self.niri.queue_redraw_all();
+                }
+            }
             Action::ToggleViewportZoom => {
                 self.niri.toggle_viewport_zoom();
             }

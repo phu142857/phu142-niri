@@ -1292,9 +1292,82 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.tiles[idx].stage_manager_saved_size()
     }
 
+    pub fn stage_manager_saved_pos(&self, id: &W::Id) -> Option<Point<f64, SizeFrac>> {
+        let idx = self.idx_of(id)?;
+        self.tiles[idx].stage_manager_saved_pos()
+    }
+
     pub fn set_stage_manager_saved_size(&mut self, id: &W::Id, size: Size<i32, Logical>) {
         let idx = self.idx_of(id).unwrap();
         self.tiles[idx].set_stage_manager_saved_size(Some(size));
+    }
+
+    /// Remember the first main-stage layout applied to this window.
+    pub fn snapshot_stage_manager_initial_if_needed(
+        &mut self,
+        id: &W::Id,
+        size: Size<i32, Logical>,
+        pos: Point<f64, Logical>,
+    ) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        if self.tiles[idx].stage_manager_initial_size().is_some() {
+            return;
+        }
+        let frac = self.logical_to_size_frac(pos);
+        self.tiles[idx].set_stage_manager_initial_size(Some(size));
+        self.tiles[idx].set_stage_manager_initial_pos(Some(frac));
+    }
+
+    pub fn restore_stage_manager_initial_layout(&mut self, id: &W::Id) -> bool {
+        let Some(idx) = self.idx_of(id) else {
+            return false;
+        };
+        let Some(size) = self.tiles[idx].stage_manager_initial_size() else {
+            return false;
+        };
+        let Some(frac) = self.tiles[idx].stage_manager_initial_pos() else {
+            return false;
+        };
+
+        self.clear_stage_manager_main_layout_state(id);
+        self.tiles[idx].set_stage_manager_saved_size(Some(size));
+        self.tiles[idx].set_stage_manager_saved_pos(Some(frac));
+        self.data[idx].update(&self.tiles[idx]);
+        true
+    }
+
+    /// Clear manual placement and restore remembered layout, or clear it for config defaults.
+    pub fn reset_stage_manager_main_layout(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        let initial_size = self.tiles[idx].stage_manager_initial_size();
+        let initial_pos = self.tiles[idx].stage_manager_initial_pos();
+
+        self.clear_stage_manager_main_layout_state(id);
+
+        if let (Some(size), Some(frac)) = (initial_size, initial_pos) {
+            self.tiles[idx].set_stage_manager_saved_size(Some(size));
+            self.tiles[idx].set_stage_manager_saved_pos(Some(frac));
+        } else {
+            self.tiles[idx].set_stage_manager_saved_size(None);
+            self.tiles[idx].set_stage_manager_saved_pos(None);
+        }
+
+        self.data[idx].update(&self.tiles[idx]);
+    }
+
+    fn clear_stage_manager_main_layout_state(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        self.tiles[idx].floating_pos = None;
+        self.tiles[idx].interactive_move_offset = Point::from((0., 0.));
+        self.tiles[idx].stop_move_animations();
+        self.interactive_resize_end(Some(id));
+        self.clear_stage_manager_thumb(id);
     }
 
     pub fn raise_to_top(&mut self, id: &W::Id) {
