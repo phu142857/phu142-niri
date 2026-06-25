@@ -159,7 +159,7 @@ pub fn is_allowed_bind_key(raw: Option<Keysym>, modifiers: Modifiers, mod_key: M
 
     matches!(
         raw,
-        Some(Keysym::z | Keysym::Z | Keysym::t | Keysym::T | Keysym::o | Keysym::O)
+        Some(Keysym::z | Keysym::Z | Keysym::t | Keysym::T | Keysym::o | Keysym::O | Keysym::s | Keysym::S)
     )
 }
 
