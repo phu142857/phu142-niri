@@ -916,6 +916,15 @@ impl State {
 
         self.niri.maybe_activate_pointer_constraint();
 
+        if let Some((output, pos_within_output)) = self
+            .niri
+            .output_under(location)
+            .map(|(output, pos)| (output.clone(), pos))
+        {
+            self.niri
+                .stage_manager_and_viewport_pointer_motion(&output, pos_within_output);
+        }
+
         // We do not show the pointer on programmatic or keyboard movement.
 
         // FIXME: granular
