@@ -1100,32 +1100,19 @@ pub fn pointer_in_stage_area(
         .contains(point)
 }
 
-/// Place a window dropped from another monitor onto the stage or cast strip.
+/// Place a window dropped from another monitor onto the main stage and reset its layout.
 pub fn cross_monitor_move_finish<W: LayoutElement>(
     workspace: &mut Workspace<W>,
     config: &StageManagerConfig,
     state: &mut StageManagerState<W>,
     window: &W::Id,
 ) -> bool {
-    if state.active_group.as_ref().is_some_and(|g| {
-        g.windows.len() == 1 && g.windows.first() == Some(window)
-    }) {
-        return false;
-    }
+    state.set_stage_single(workspace, window.clone(), config.max_cast_groups);
+    reset_main_layout(workspace, state);
 
-    workspace.stage_manager_save_active_sizes();
-    let changed = if state.stage_has_main() {
-        state.force_window_to_cast(workspace, window.clone(), config.max_cast_groups)
-    } else {
-        state.set_stage_single(workspace, window.clone(), config.max_cast_groups);
-        true
-    };
-
-    if changed {
-        reorganize(workspace, state);
-        apply_geometry(workspace, config, state);
-    }
-    changed
+    reorganize(workspace, state);
+    apply_geometry(workspace, config, state);
+    true
 }
 
 pub fn strip_drag_end<W: LayoutElement>(
