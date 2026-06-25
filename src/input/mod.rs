@@ -507,6 +507,36 @@ impl State {
                 }
 
                 if this.niri.keyboard_pointer.active {
+                    if crate::keyboard_pointer::is_allowed_bind_key(raw, modifiers, mod_key) {
+                        let res = {
+                            let config = this.niri.config.borrow();
+                            let bindings =
+                                make_binds_iter(&config, &mut this.niri.window_mru_ui, modifiers);
+
+                            should_intercept_key(
+                                &mut this.niri.suppressed_keys,
+                                bindings,
+                                mod_key,
+                                key_code,
+                                modified,
+                                raw,
+                                pressed,
+                                *mods,
+                                &this.niri.screenshot_ui,
+                                this.niri.config.borrow().input.disable_power_key_handling,
+                                is_inhibiting_shortcuts,
+                            )
+                        };
+
+                        if let FilterResult::Intercept(Some(_)) = res {
+                            return res;
+                        }
+
+                        if matches!(res, FilterResult::Intercept(None)) {
+                            return res;
+                        }
+                    }
+
                     if let Some(raw) = raw {
                         this.keyboard_pointer_handle_key(raw, pressed, modifiers);
                     }

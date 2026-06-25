@@ -1,7 +1,7 @@
 //! Keyboard-driven pointer control built into niri (warpd-like normal mode).
 
 use niri_config::{
-    CornerRadius, Gradient, KeyboardPointer as KeyboardPointerConfig, Modifiers,
+    CornerRadius, Gradient, KeyboardPointer as KeyboardPointerConfig, Modifiers, ModKey,
 };
 use smithay::backend::input::{Axis, AxisSource, ButtonState};
 use smithay::desktop::utils::bbox_from_surface_tree;
@@ -149,6 +149,18 @@ impl KeyboardPointerState {
         let step = SCROLL_STEP * (dt_ms / TICK_MS as f64);
         Some(Point::from((dx / len * step, dy / len * step)))
     }
+}
+
+/// Binds allowed through while keyboard-pointer mode is active.
+pub fn is_allowed_bind_key(raw: Option<Keysym>, modifiers: Modifiers, mod_key: ModKey) -> bool {
+    if !modifiers.contains(mod_key.to_modifiers()) || !modifiers.contains(Modifiers::SHIFT) {
+        return false;
+    }
+
+    matches!(
+        raw,
+        Some(Keysym::z | Keysym::Z | Keysym::t | Keysym::T | Keysym::o | Keysym::O)
+    )
 }
 
 impl State {
