@@ -153,6 +153,7 @@ use crate::protocols::output_management::OutputManagementManagerState;
 use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer, ScreencopyManagerState};
 use crate::protocols::virtual_pointer::VirtualPointerManagerState;
 use crate::render_helpers::blur::BlurOptions;
+use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::debug::push_opaque_regions;
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
@@ -3872,6 +3873,7 @@ impl Niri {
             .tablet_cursor_location
             .unwrap_or_else(|| self.seat.get_pointer().unwrap().current_location());
         let pointer_pos = pointer_pos - output_pos.to_f64();
+        let hotspot_pos = pointer_pos;
 
         // Get the render cursor to draw.
         let cursor_scale = output_scale.integer_scale();
@@ -3881,7 +3883,7 @@ impl Niri {
 
         match render_cursor {
             RenderCursor::Hidden => (),
-            RenderCursor::Surface { surface, hotspot } => {
+            RenderCursor::Surface { ref surface, hotspot } => {
                 let pointer_pos =
                     (pointer_pos - hotspot.to_f64()).to_physical_precise_round(output_scale);
 
@@ -3898,7 +3900,7 @@ impl Niri {
             RenderCursor::Named {
                 icon,
                 scale,
-                cursor,
+                ref cursor,
             } => {
                 let (idx, frame) = cursor.frame(self.start_time.elapsed().as_millis() as u32);
                 let hotspot = XCursor::hotspot(frame).to_logical(scale);
@@ -3933,6 +3935,18 @@ impl Niri {
                 output_scale,
                 1.,
                 Kind::ScanoutCandidate,
+                &mut |elem| push(elem.into()),
+            );
+        }
+
+        if self.keyboard_pointer.active {
+            crate::keyboard_pointer::render_indicator(
+                self,
+                renderer,
+                output,
+                hotspot_pos,
+                &render_cursor,
+                self.start_time.elapsed().as_millis() as u32,
                 &mut |elem| push(elem.into()),
             );
         }
@@ -6681,6 +6695,7 @@ niri_render_elements! {
     PointerRenderElements<R> => {
         Wayland = WaylandSurfaceRenderElement<R>,
         NamedPointer = MemoryRenderBufferRenderElement<R>,
+        KeyboardPointerRing = BorderRenderElement,
     }
 }
 

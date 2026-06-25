@@ -1,12 +1,19 @@
 //! Keyboard-driven pointer control built into niri (warpd-like normal mode).
 
-use niri_config::{KeyboardPointer as KeyboardPointerConfig, Modifiers};
+use niri_config::{
+    CornerRadius, Gradient, KeyboardPointer as KeyboardPointerConfig, Modifiers,
+};
 use smithay::backend::input::{Axis, AxisSource, ButtonState};
+use smithay::desktop::utils::bbox_from_surface_tree;
 use smithay::input::pointer::{AxisFrame, ButtonEvent};
-use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
+use smithay::output::Output;
+use smithay::utils::{Logical, Point, Rectangle, Size, SERIAL_COUNTER};
 use smithay::input::keyboard::Keysym;
 
-use crate::niri::{KeyboardFocus, State};
+use crate::cursor::{RenderCursor, XCursor};
+use crate::niri::{KeyboardFocus, Niri, State};
+use crate::render_helpers::border::BorderRenderElement;
+use crate::render_helpers::renderer::NiriRenderer;
 use crate::utils::get_monotonic_time;
 
 const TICK_MS: u64 = 10;
@@ -14,6 +21,10 @@ const TICK_MS: u64 = 10;
 const SCROLL_STEP: f64 = 4.;
 /// Mouse wheel notch size, used only to compute matching v120 values.
 const WHEEL_NOTCH: f64 = 15.;
+/// Padding between the cursor and the keyboard-pointer indicator ring.
+const INDICATOR_PADDING: f64 = 4.;
+/// Indicator ring stroke width.
+const INDICATOR_BORDER_WIDTH: f32 = 1.;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyboardPointerKeyResult {
@@ -380,4 +391,93 @@ impl KeyboardFocus {
     pub fn is_keyboard_pointer(&self) -> bool {
         matches!(self, KeyboardFocus::KeyboardPointer)
     }
+}
+
+fn cursor_bbox(
+    render_cursor: &RenderCursor,
+    hotspot_pos: Point<f64, Logical>,
+    cursor_time_ms: u32,
+) -> Rectangle<f64, Logical> {
+    match render_cursor {
+        RenderCursor::Hidden => Rectangle::new(
+            hotspot_pos - Point::from((8., 8.)),
+            Size::from((16., 16.)),
+        ),
+        RenderCursor::Surface { hotspot, surface } => {
+            let loc = hotspot_pos - hotspot.to_f64();
+            let bbox = bbox_from_surface_tree(surface, loc.to_i32_round());
+            Rectangle::new(loc, Size::from((bbox.size.w as f64, bbox.size.h as f64)))
+        }
+        RenderCursor::Named { scale, cursor, .. } => {
+            let (_, frame) = cursor.frame(cursor_time_ms);
+            let hotspot = XCursor::hotspot(frame).to_logical(*scale);
+            let size = Size::from((
+                frame.width as f64 / f64::from(*scale),
+                frame.height as f64 / f64::from(*scale),
+            ));
+            Rectangle::new(hotspot_pos - hotspot.to_f64(), size)
+        }
+    }
+}
+
+/// Draws a circular ring around the cursor while keyboard-pointer mode is active.
+pub fn render_indicator<R: NiriRenderer>(
+    niri: &Niri,
+    renderer: &mut R,
+    output: &Output,
+    hotspot_pos: Point<f64, Logical>,
+    render_cursor: &RenderCursor,
+    cursor_time_ms: u32,
+    push: &mut dyn FnMut(BorderRenderElement),
+) {
+    if !niri.keyboard_pointer.active {
+        return;
+    }
+
+    if !BorderRenderElement::has_shader(renderer) {
+        return;
+    }
+
+    let bbox = cursor_bbox(render_cursor, hotspot_pos, cursor_time_ms);
+    let center = hotspot_pos;
+    let max_dist = [
+        bbox.loc,
+        Point::from((bbox.loc.x + bbox.size.w, bbox.loc.y)),
+        Point::from((bbox.loc.x, bbox.loc.y + bbox.size.h)),
+        Point::from((bbox.loc.x + bbox.size.w, bbox.loc.y + bbox.size.h)),
+    ]
+    .iter()
+    .map(|corner| {
+        let dx = corner.x - hotspot_pos.x;
+        let dy = corner.y - hotspot_pos.y;
+        (dx * dx + dy * dy).sqrt()
+    })
+    .fold(0., f64::max);
+    let radius = max_dist + INDICATOR_PADDING;
+    let diameter = radius * 2.;
+    let ring_loc = Point::from((center.x - radius, center.y - radius));
+    let ring_size = Size::from((diameter, diameter));
+
+    let scale = output.current_scale().fractional_scale();
+    let color = niri.config.borrow().layout.focus_ring.active_color;
+    let corner_radius =
+        CornerRadius::from((radius as f32).min(diameter as f32 / 2.)).fit_to(diameter as f32, diameter as f32);
+    let gradient = Gradient::from(color);
+
+    let elem = BorderRenderElement::new(
+        ring_size,
+        Rectangle::new(Point::default(), ring_size),
+        gradient.in_,
+        color,
+        color,
+        0.,
+        Rectangle::new(Point::default(), ring_size),
+        INDICATOR_BORDER_WIDTH,
+        corner_radius,
+        scale as f32,
+        1.,
+    )
+    .with_location(ring_loc);
+
+    push(elem);
 }
