@@ -373,6 +373,8 @@ pub enum Action {
     StageManagerResetMainLayout,
     /// Toggle full-screen viewport zoom (magnifier).
     ToggleViewportZoom,
+    /// Toggle built-in keyboard pointer mode (warpd-like).
+    ToggleKeyboardPointer,
     /// Increase viewport zoom scale (while zoom is active).
     ViewportZoomIn,
     /// Decrease viewport zoom scale (while zoom is active).

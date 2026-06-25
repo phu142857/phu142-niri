@@ -152,6 +152,60 @@ impl MergeWith<OverviewPart> for Overview {
     }
 }
 
+/// Keyboard-driven pointer control (built-in warpd-like normal mode).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeyboardPointer {
+    /// Initial speed in logical pixels per second.
+    pub speed: f64,
+    pub max_speed: f64,
+    pub acceleration: f64,
+    /// Scroll speed in logical pixels per second.
+    pub scroll_speed: f64,
+}
+
+impl Default for KeyboardPointer {
+    fn default() -> Self {
+        Self {
+            speed: 350.,
+            max_speed: 1200.,
+            acceleration: 1400.,
+            scroll_speed: 400.,
+        }
+    }
+}
+
+#[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]
+pub struct KeyboardPointerPart {
+    #[knuffel(child, unwrap(argument))]
+    pub speed: Option<FloatOrInt<1, 10000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub max_speed: Option<FloatOrInt<1, 10000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub acceleration: Option<FloatOrInt<0, 100000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub scroll_speed: Option<FloatOrInt<1, 10000>>,
+}
+
+impl MergeWith<KeyboardPointerPart> for KeyboardPointer {
+    fn merge_with(&mut self, part: &KeyboardPointerPart) {
+        if let Some(v) = part.speed.filter(|v| v.0 > 0.) {
+            self.speed = v.0;
+        }
+        if let Some(v) = part.max_speed.filter(|v| v.0 > 0.) {
+            self.max_speed = v.0;
+        }
+        if let Some(v) = part.acceleration {
+            self.acceleration = v.0;
+        }
+        if let Some(v) = part.scroll_speed.filter(|v| v.0 > 0.) {
+            self.scroll_speed = v.0;
+        }
+        if self.max_speed < self.speed {
+            self.max_speed = self.speed;
+        }
+    }
+}
+
 /// Full-screen viewport zoom (magnifier) settings.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ViewportZoom {

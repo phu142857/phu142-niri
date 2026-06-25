@@ -178,6 +178,7 @@ use crate::utils::vblank_throttle::VBlankThrottle;
 use crate::utils::watcher::Watcher;
 use crate::utils::xwayland::satellite::Satellite;
 use crate::viewport_zoom::ViewportZoomState;
+use crate::keyboard_pointer::KeyboardPointerState;
 use crate::utils::{
     center, center_f64, expand_home, get_monotonic_time, ipc_transform_to_smithay, is_mapped,
     logical_output, make_screenshot_path, output_matches_name, output_size, panel_orientation,
@@ -417,6 +418,9 @@ pub struct Niri {
 
     #[cfg(feature = "xdp-gnome-screencast")]
     pub casting: Screencasting,
+
+    pub keyboard_pointer: KeyboardPointerState,
+    pub keyboard_pointer_timer: Option<RegistrationToken>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -525,6 +529,8 @@ pub enum KeyboardFocus {
     ExitConfirmDialog,
     Overview,
     Mru,
+    /// Built-in keyboard pointer mode (warpd-like).
+    KeyboardPointer,
 }
 
 #[derive(Default, Clone, PartialEq)]
@@ -674,6 +680,7 @@ impl KeyboardFocus {
             KeyboardFocus::ExitConfirmDialog => None,
             KeyboardFocus::Overview => None,
             KeyboardFocus::Mru => None,
+            KeyboardFocus::KeyboardPointer => None,
         }
     }
 
@@ -686,6 +693,7 @@ impl KeyboardFocus {
             KeyboardFocus::ExitConfirmDialog => None,
             KeyboardFocus::Overview => None,
             KeyboardFocus::Mru => None,
+            KeyboardFocus::KeyboardPointer => None,
         }
     }
 
@@ -1181,6 +1189,8 @@ impl State {
             KeyboardFocus::ScreenshotUi
         } else if self.niri.window_mru_ui.is_open() {
             KeyboardFocus::Mru
+        } else if self.niri.keyboard_pointer.active {
+            KeyboardFocus::KeyboardPointer
         } else if let Some(output) = self.niri.layout.active_output() {
             let mon = self.niri.layout.monitor_for_output(output).unwrap();
             let layers = layer_map_for_output(output);
@@ -2667,6 +2677,9 @@ impl Niri {
 
             #[cfg(feature = "xdp-gnome-screencast")]
             casting: screencasting,
+
+            keyboard_pointer: KeyboardPointerState::default(),
+            keyboard_pointer_timer: None,
         };
 
         niri.reset_pointer_inactivity_timer();
@@ -4146,6 +4159,7 @@ impl Niri {
             KeyboardFocus::ExitConfirmDialog => true,
             KeyboardFocus::Overview => true,
             KeyboardFocus::Mru => true,
+            KeyboardFocus::KeyboardPointer => true,
         };
 
         self.layout.refresh(layout_is_active);

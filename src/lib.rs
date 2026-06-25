@@ -24,6 +24,7 @@ pub mod screencasting;
 pub mod ui;
 pub mod utils;
 pub mod viewport_zoom;
+pub mod keyboard_pointer;
 pub mod window;
 
 #[cfg(test)]

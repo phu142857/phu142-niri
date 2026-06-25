@@ -506,6 +506,18 @@ impl State {
                     return FilterResult::Intercept(None);
                 }
 
+                if this.niri.keyboard_pointer.active {
+                    if let Some(raw) = raw {
+                        this.keyboard_pointer_handle_key(raw, pressed, modifiers);
+                    }
+                    if pressed {
+                        this.niri.suppressed_keys.insert(key_code);
+                    } else {
+                        this.niri.suppressed_keys.remove(&key_code);
+                    }
+                    return FilterResult::Intercept(None);
+                }
+
                 // Check if all modifiers were released while the MRU UI was open. If so, close the
                 // UI (which will also transfer the focus to the current MRU UI selection).
                 if this.niri.window_mru_ui.is_open() && !pressed && modifiers.is_empty() {
@@ -2297,6 +2309,9 @@ impl State {
             }
             Action::ToggleViewportZoom => {
                 self.niri.toggle_viewport_zoom();
+            }
+            Action::ToggleKeyboardPointer => {
+                self.toggle_keyboard_pointer();
             }
             Action::ViewportZoomIn => {
                 self.niri.viewport_zoom_in();
