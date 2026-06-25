@@ -1924,6 +1924,15 @@ impl<W: LayoutElement> Layout<W> {
         ws.stage_manager_reset_main_layout()
     }
 
+    fn refresh_stage_manager_all_workspaces(&mut self) {
+        if self.options.layout.stage_manager.is_none() {
+            return;
+        }
+        for ws in self.workspaces_mut() {
+            ws.refresh_stage_manager_layout();
+        }
+    }
+
     fn stage_manager_action_on_window(
         &mut self,
         window: &W::Id,
@@ -3506,6 +3515,8 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
+        let mut refresh_stage_manager = false;
+
         if let MonitorSet::Normal {
             monitors,
             active_monitor_idx,
@@ -3591,6 +3602,7 @@ impl<W: LayoutElement> Layout<W> {
             if cross_monitor && self.options.layout.stage_manager.is_some() {
                 monitors[new_idx].workspaces[workspace_idx]
                     .stage_manager_cross_monitor_drop(&window_id);
+                refresh_stage_manager = true;
             }
 
             if activate.map_smart(|| false) {
@@ -3601,6 +3613,10 @@ impl<W: LayoutElement> Layout<W> {
             if mon.workspace_switch.is_none() {
                 monitors[mon_idx].clean_up_workspaces();
             }
+        }
+
+        if refresh_stage_manager {
+            self.refresh_stage_manager_all_workspaces();
         }
     }
 
@@ -4675,6 +4691,9 @@ impl<W: LayoutElement> Layout<W> {
                 } else {
                     ws.stage_manager_strip_drag_end(&win_id, pointer_pos_within_output);
                 }
+            }
+            if cross_monitor_drop {
+                self.refresh_stage_manager_all_workspaces();
             }
         }
     }

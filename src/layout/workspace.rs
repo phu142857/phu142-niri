@@ -2640,6 +2640,12 @@ impl<W: LayoutElement> Workspace<W> {
         self.stage_manager = Some(state);
     }
 
+    pub fn refresh_stage_manager_layout(&mut self) {
+        if self.options.layout.stage_manager.is_some() {
+            self.apply_stage_manager_layout();
+        }
+    }
+
     pub fn stage_manager_pointer_motion(&mut self, point: Point<f64, Logical>) -> bool {
         let Some(config) = self.options.layout.stage_manager.clone() else {
             return false;

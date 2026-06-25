@@ -873,6 +873,63 @@ impl<W: LayoutElement> StageManagerState<W> {
         }
         ids
     }
+
+    /// Drop stage-manager references to windows that are no longer on this workspace.
+    pub fn prune_absent_windows(
+        &mut self,
+        workspace: &Workspace<W>,
+        max_cast: usize,
+    ) {
+        if self
+            .interactive_move_stage
+            .as_ref()
+            .is_some_and(|id| !workspace.has_window(id))
+        {
+            self.interactive_move_stage = None;
+        }
+
+        let on_workspace = |id: &W::Id| workspace.has_window(id);
+
+        self.stage_dialog_parents
+            .retain(|(dialog, parent)| on_workspace(dialog) && on_workspace(parent));
+        self.new_cast_windows.retain(|w| on_workspace(w));
+
+        if let Some(active) = &mut self.active_group {
+            active.windows.retain(|id| on_workspace(id));
+            if active.windows.is_empty() {
+                self.active_group = None;
+            }
+        }
+
+        Self::prune_group_list(&mut self.cast_groups, &on_workspace);
+        Self::prune_group_list(&mut self.hidden_groups, &on_workspace);
+
+        if self.active_group.is_none() {
+            if !self.cast_groups.is_empty() {
+                self.active_group = Some(self.cast_groups.remove(0));
+            } else if !self.hidden_groups.is_empty() {
+                self.active_group = Some(self.hidden_groups.remove(0));
+            }
+        }
+
+        self.enforce_cast_limit(max_cast);
+
+        if let Some(hovered) = self.hovered_cast {
+            if hovered >= self.total_strip_groups() {
+                self.hovered_cast = None;
+            }
+        }
+    }
+
+    fn prune_group_list(
+        groups: &mut Vec<StageGroup<W>>,
+        on_workspace: &impl Fn(&W::Id) -> bool,
+    ) {
+        groups.retain_mut(|g| {
+            g.windows.retain(|id| on_workspace(id));
+            !g.windows.is_empty()
+        });
+    }
 }
 
 fn build_groups_from_windows<W: LayoutElement>(
@@ -1485,6 +1542,8 @@ fn apply_geometry<W: LayoutElement>(
     config: &StageManagerConfig,
     state: &mut StageManagerState<W>,
 ) {
+    state.prune_absent_windows(workspace, config.max_cast_groups);
+
     let working_area = workspace.working_area();
     let areas = compute_areas(working_area, config);
     let (thumb_width, thumb_height) = cast_thumb_size(working_area, areas, config);
