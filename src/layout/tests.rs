@@ -1421,6 +1421,7 @@ impl Op {
                 if update {
                     if let Some(new_parent_id) = new_parent_id {
                         layout.descendants_added(&new_parent_id);
+                        layout.stage_manager_on_parent_changed(&id);
                     }
                 }
             }
@@ -3211,6 +3212,102 @@ fn stacking_set_parent_brings_up_child() {
     ];
 
     check_ops(ops);
+}
+
+fn stage_manager_test_options() -> Options {
+    Options {
+        layout: niri_config::Layout {
+            stage_manager: Some(niri_config::StageManagerConfig::default()),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+#[test]
+fn stage_manager_dialog_overlays_parent_on_stage() {
+    let ops = [
+        Op::AddOutput(0),
+        Op::AddWindow {
+            params: TestWindowParams {
+                is_floating: true,
+                ..TestWindowParams::new(1)
+            },
+        },
+        Op::AddWindow {
+            params: TestWindowParams {
+                is_floating: true,
+                parent_id: Some(1),
+                ..TestWindowParams::new(2)
+            },
+        },
+    ];
+
+    let mut layout = check_ops_with_options(stage_manager_test_options(), ops);
+    let (_, _, ws) = layout
+        .workspaces()
+        .find(|(_, _, ws)| ws.has_window(&1))
+        .unwrap();
+
+    assert!(!ws.is_stage_manager_strip_window(&1));
+    assert!(!ws.is_stage_manager_strip_window(&2));
+    assert_eq!(ws.active_window().map(LayoutElement::id), Some(&2));
+    assert!(!ws.stage_manager_parallel_active());
+
+    let (parent_pos, parent_size) = ws
+        .tiles_with_render_positions()
+        .find(|(tile, _, _)| tile.window().id() == &1)
+        .map(|(tile, pos, _)| (pos, tile.tile_expected_or_current_size()))
+        .unwrap();
+    let (dialog_pos, dialog_size) = ws
+        .tiles_with_render_positions()
+        .find(|(tile, _, _)| tile.window().id() == &2)
+        .map(|(tile, pos, _)| (pos, tile.tile_expected_or_current_size()))
+        .unwrap();
+    let expected = parent_pos + (parent_size.to_point() - dialog_size.to_point()).downscale(2.);
+    assert!((dialog_pos.x - expected.x).abs() <= 1.);
+    assert!((dialog_pos.y - expected.y).abs() <= 1.);
+
+    check_ops_on_layout(&mut layout, [Op::CloseWindow(2)]);
+    let (_, _, ws) = layout
+        .workspaces()
+        .find(|(_, _, ws)| ws.has_window(&1))
+        .unwrap();
+    assert!(!ws.is_stage_manager_strip_window(&1));
+    assert_eq!(ws.active_window().map(LayoutElement::id), Some(&1));
+}
+
+#[test]
+fn stage_manager_late_parent_dialog_joins_parent_on_stage() {
+    let ops = [
+        Op::AddOutput(0),
+        Op::AddWindow {
+            params: TestWindowParams {
+                is_floating: true,
+                ..TestWindowParams::new(1)
+            },
+        },
+        Op::AddWindow {
+            params: TestWindowParams {
+                is_floating: true,
+                ..TestWindowParams::new(2)
+            },
+        },
+        Op::SetParent {
+            id: 2,
+            new_parent_id: Some(1),
+        },
+    ];
+
+    let layout = check_ops_with_options(stage_manager_test_options(), ops);
+    let (_, _, ws) = layout
+        .workspaces()
+        .find(|(_, _, ws)| ws.has_window(&1))
+        .unwrap();
+
+    assert!(!ws.is_stage_manager_strip_window(&1));
+    assert!(!ws.is_stage_manager_strip_window(&2));
+    assert_eq!(ws.active_window().map(LayoutElement::id), Some(&2));
 }
 
 #[test]

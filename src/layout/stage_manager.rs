@@ -108,7 +108,7 @@ pub struct StageManagerState<W: LayoutElement> {
     new_cast_windows: Vec<W::Id>,
     /// Stage window temporarily removed from the layout during an interactive move.
     interactive_move_stage: Option<W::Id>,
-    /// Dialog on the stage → its parent parked in the cast strip until the dialog closes.
+    /// Dialogs overlaid on their parent while both remain on the stage.
     stage_dialog_parents: Vec<(W::Id, W::Id)>,
 }
 
@@ -245,6 +245,12 @@ impl<W: LayoutElement> StageManagerState<W> {
         self.stage_parent_on_stage(workspace, id).is_some()
     }
 
+    /// Whether an as-yet-unmapped window is a child of a window currently on the stage.
+    pub fn is_window_child_of_active(&self, workspace: &Workspace<W>, child: &W) -> bool {
+        self.stage_parent_on_stage_for_window(workspace, child)
+            .is_some()
+    }
+
     pub fn is_stage_dialog(&self, id: &W::Id) -> bool {
         self.stage_dialog_parents
             .iter()
@@ -253,9 +259,17 @@ impl<W: LayoutElement> StageManagerState<W> {
 
     fn stage_parent_on_stage(&self, workspace: &Workspace<W>, id: &W::Id) -> Option<W::Id> {
         let child = workspace.windows().find(|w| w.id() == id)?;
+        self.stage_parent_on_stage_for_window(workspace, child)
+    }
+
+    fn stage_parent_on_stage_for_window(
+        &self,
+        workspace: &Workspace<W>,
+        child: &W,
+    ) -> Option<W::Id> {
         let active = self.active_group.as_ref()?;
         for parent_id in &active.windows {
-            if parent_id == id {
+            if parent_id == child.id() {
                 continue;
             }
             let Some(parent) = workspace.windows().find(|w| w.id() == parent_id) else {
@@ -303,15 +317,14 @@ impl<W: LayoutElement> StageManagerState<W> {
         !self.stage_dialog_parents.is_empty()
     }
 
-    /// Whether [parent_id] is a stage primary window that should not receive hits at [pos].
-    pub fn stage_parent_hit_blocked_by_modal(
+    /// Whether [parent_id] has a modal overlay and must not receive pointer input.
+    pub fn stage_parent_blocked_by_modal(
         &self,
         workspace: &Workspace<W>,
         parent_id: &W::Id,
-        tile_hits: &impl Fn(&W::Id) -> bool,
     ) -> bool {
         self.stage_modal_overlay_for_parent(workspace, parent_id)
-            .is_some_and(|overlay_id| tile_hits(&overlay_id))
+            .is_some()
     }
 
     /// Redirect activation from a stage parent to its open modal overlay.
@@ -334,14 +347,14 @@ impl<W: LayoutElement> StageManagerState<W> {
         let Some(parent_id) = self.stage_parent_of(workspace, &id) else {
             return false;
         };
-        if !self.is_stage_window(&parent_id) && !self.is_cast_window(&parent_id) {
+        if !self.is_stage_window(&parent_id) {
             return false;
         }
         self.open_stage_dialog(workspace, id, parent_id, max_cast);
         true
     }
 
-    /// Park the parent in the cast strip and show the dialog alone on the stage.
+    /// Keep the parent on the stage and show the dialog as an overlay above it.
     fn open_stage_dialog(
         &mut self,
         workspace: &mut Workspace<W>,
@@ -353,28 +366,16 @@ impl<W: LayoutElement> StageManagerState<W> {
         Self::remove_from_group_list(&mut self.cast_groups, &dialog_id);
         Self::remove_from_group_list(&mut self.hidden_groups, &dialog_id);
 
-        if self.is_stage_window(&parent_id) {
-            workspace
-                .floating
-                .park_stage_position_for_cast(&parent_id, true);
-            if let Some(active) = &mut self.active_group {
-                active.remove(&parent_id);
-                if active.windows.is_empty() {
-                    self.active_group = None;
-                }
-            }
-            let key = workspace.window_stack_group_key(&parent_id);
-            self.insert_into_cast(workspace, parent_id.clone(), key);
-        }
-
         self.stage_dialog_parents
-            .retain(|(_, parent)| parent != &parent_id);
+            .retain(|(dialog, _)| dialog != &dialog_id);
         self.stage_dialog_parents
             .push((dialog_id.clone(), parent_id));
 
-        Self::remove_from_group_list(&mut self.cast_groups, &dialog_id);
-        Self::remove_from_group_list(&mut self.hidden_groups, &dialog_id);
-        self.active_group = Some(StageGroup::new(dialog_id));
+        if let Some(active) = &mut self.active_group {
+            active.remove(&dialog_id);
+            active.windows.push(dialog_id.clone());
+        }
+        workspace.floating.clear_stage_manager_thumb(&dialog_id);
         self.enforce_cast_limit(max_cast);
     }
 
@@ -418,23 +419,20 @@ impl<W: LayoutElement> StageManagerState<W> {
         self.enforce_cast_limit(max_cast);
     }
 
-    /// Returns the parent window to restore when a stage dialog closes.
     pub fn on_window_removed(
         &mut self,
-        workspace: &mut Workspace<W>,
+        _workspace: &mut Workspace<W>,
         id: &W::Id,
         max_cast: usize,
-    ) -> Option<W::Id> {
+    ) {
         if self.interactive_move_stage.as_ref() == Some(id) {
-            return None;
+            return;
         }
 
-        let parent_to_restore = self
-            .stage_dialog_parents
-            .iter()
-            .find(|(dialog, _)| dialog == id)
-            .map(|(_, parent)| parent.clone());
-        self.stage_dialog_parents.retain(|(dialog, _)| dialog != id);
+        // If a parent disappears before its dialogs, stop treating those dialogs as overlays so
+        // they remain valid primary stage windows until the client destroys them too.
+        self.stage_dialog_parents
+            .retain(|(dialog, parent)| dialog != id && parent != id);
 
         self.new_cast_windows.retain(|w| w != id);
         if let Some(group) = &mut self.active_group {
@@ -445,15 +443,6 @@ impl<W: LayoutElement> StageManagerState<W> {
 
         Self::remove_from_group_list(&mut self.cast_groups, id);
         Self::remove_from_group_list(&mut self.hidden_groups, id);
-
-        if let Some(parent_id) = parent_to_restore {
-            Self::remove_from_group_list(&mut self.cast_groups, &parent_id);
-            Self::remove_from_group_list(&mut self.hidden_groups, &parent_id);
-            workspace.floating.restore_stage_saved_position(&parent_id);
-            self.active_group = Some(StageGroup::new(parent_id.clone()));
-            self.enforce_cast_limit(max_cast);
-            return Some(parent_id);
-        }
 
         if self.active_group.is_none() {
             if !self.cast_groups.is_empty() {
@@ -470,8 +459,6 @@ impl<W: LayoutElement> StageManagerState<W> {
                 self.hovered_cast = None;
             }
         }
-
-        None
     }
 
     /// Focus a cast window without promoting it to the stage (used for newly opened windows).
@@ -1769,12 +1756,7 @@ fn raise_stage_group_z_order<W: LayoutElement>(
 
     for id in &group.windows {
         if !is_stage_child_overlay(workspace, state, id) {
-            workspace.floating.raise_to_top(id);
-        }
-    }
-    for id in &group.windows {
-        if is_stage_child_overlay(workspace, state, id) {
-            workspace.floating.raise_to_top(id);
+            workspace.floating.raise_with_descendants_to_top(id);
         }
     }
 
@@ -1782,7 +1764,7 @@ fn raise_stage_group_z_order<W: LayoutElement>(
         let top = state
             .stage_modal_overlay_for_parent(workspace, active)
             .unwrap_or_else(|| active.clone());
-        workspace.floating.raise_to_top(&top);
+        workspace.floating.raise_with_descendants_to_top(&top);
     }
 }
 
@@ -1902,6 +1884,14 @@ fn apply_stage_geometry<W: LayoutElement>(
             Point::from((x, y))
         };
         set_stage_window_geometry(workspace, id, size, pos);
+    }
+
+    // Parent geometry must be final before positioning overlays. The vector is insertion-ordered,
+    // so nested dialogs are centered after their own parent dialog.
+    for (dialog, parent) in &state.stage_dialog_parents {
+        workspace
+            .floating
+            .center_stage_dialog_on_parent(dialog, parent);
     }
 }
 

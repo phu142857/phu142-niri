@@ -732,7 +732,7 @@ impl<W: LayoutElement> Workspace<W> {
             && self
                 .stage_manager
                 .as_ref()
-                .is_some_and(|state| state.is_stage_child_of_active(self, &window_id));
+                .is_some_and(|state| state.is_window_child_of_active(self, tile.window()));
 
         // New windows join the cast strip; keep the current stage window focused.
         // Dialogs parented to a stage window are an exception: focus them on the stage.
@@ -954,15 +954,9 @@ impl<W: LayoutElement> Workspace<W> {
                 .as_ref()
                 .map(|c| c.max_cast_groups)
                 .unwrap_or(6);
-            let restore_parent = if let Some(mut state) = self.stage_manager.take() {
-                let restore = state.on_window_removed(self, id, max_cast);
+            if let Some(mut state) = self.stage_manager.take() {
+                state.on_window_removed(self, id, max_cast);
                 self.stage_manager = Some(state);
-                restore
-            } else {
-                None
-            };
-            if let Some(parent_id) = restore_parent {
-                self.activate_window(&parent_id);
             }
             let skip_layout = self
                 .stage_manager
@@ -2016,14 +2010,6 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.start_open_animation(id) || self.floating.start_open_animation(id)
     }
 
-    fn floating_tile_hits_at(&self, id: &W::Id, pos: Point<f64, Logical>) -> bool {
-        self.floating
-            .tiles_with_render_positions_rev()
-            .find(|(tile, _)| tile.window().id() == id)
-            .and_then(|(tile, tile_pos)| HitType::hit_tile(tile, tile_pos, pos))
-            .is_some()
-    }
-
     fn stage_manager_resolve_activation_target(&self, window: &W::Id) -> W::Id {
         self.stage_manager
             .as_ref()
@@ -2067,7 +2053,6 @@ impl<W: LayoutElement> Workspace<W> {
                 }
             }
 
-            let tile_hits_at = |id: &W::Id| self.floating_tile_hits_at(id, pos);
             if let Some(rv) = self
                 .floating
                 .tiles_with_render_positions_rev()
@@ -2076,7 +2061,7 @@ impl<W: LayoutElement> Workspace<W> {
                     if let Some(state) = &self.stage_manager {
                         if state.is_stage_window(id)
                             && !state.is_stage_child_of_active(self, id)
-                            && state.stage_parent_hit_blocked_by_modal(self, id, &tile_hits_at)
+                            && state.stage_parent_blocked_by_modal(self, id)
                         {
                             return None;
                         }
@@ -2097,6 +2082,15 @@ impl<W: LayoutElement> Workspace<W> {
                 // This logic should be consistent with window_under() in when it returns Some vs.
                 // None.
                 if !visible {
+                    return None;
+                }
+
+                let id = tile.window().id();
+                if self.stage_manager.as_ref().is_some_and(|state| {
+                    state.is_stage_window(id)
+                        && !state.is_stage_child_of_active(self, id)
+                        && state.stage_parent_blocked_by_modal(self, id)
+                }) {
                     return None;
                 }
 

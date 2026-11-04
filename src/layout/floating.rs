@@ -1264,6 +1264,26 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.data[idx].update(&self.tiles[idx]);
     }
 
+    /// Center a stage dialog over its parent without changing either window's size.
+    pub fn center_stage_dialog_on_parent(&mut self, dialog: &W::Id, parent: &W::Id) -> bool {
+        let Some(dialog_idx) = self.idx_of(dialog) else {
+            return false;
+        };
+        let Some(parent_idx) = self.idx_of(parent) else {
+            return false;
+        };
+
+        self.clear_stage_manager_thumb(dialog);
+
+        let parent_pos = self.data[parent_idx].logical_pos;
+        let parent_size = self.tiles[parent_idx].tile_expected_or_current_size();
+        let dialog_size = self.tiles[dialog_idx].tile_expected_or_current_size();
+        let pos = parent_pos + (parent_size.to_point() - dialog_size.to_point()).downscale(2.);
+        let pos = self.clamp_within_working_area(pos, dialog_size);
+        self.data[dialog_idx].set_logical_pos(pos);
+        true
+    }
+
     /// Park a cast sibling off-screen so it does not render or receive clicks.
     pub fn set_stage_manager_strip_inert(&mut self, id: &W::Id) {
         let Some(idx) = self.idx_of(id) else {
@@ -1380,6 +1400,15 @@ impl<W: LayoutElement> FloatingSpace<W> {
             self.tiles.push(tile);
             self.data.push(data);
         }
+    }
+
+    /// Raise a window and its descendants while preserving parent/child stacking constraints.
+    pub fn raise_with_descendants_to_top(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        self.raise_window(idx, 0);
+        self.bring_up_descendants_of(0);
     }
 
     pub fn interactive_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
