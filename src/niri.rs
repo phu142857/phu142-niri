@@ -34,7 +34,7 @@ use smithay::backend::renderer::element::{
 };
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::sync::SyncPoint;
-use smithay::backend::renderer::Color32F;
+use smithay::backend::renderer::{Color32F, Renderer as _, TextureFilter};
 use smithay::desktop::utils::{
     bbox_from_surface_tree, output_update, send_dmabuf_feedback_surface_tree,
     send_frames_surface_tree, surface_presentation_feedback_flags_from_states,
@@ -800,7 +800,12 @@ impl State {
         // it's good to advance every now and then so the workspace clean-up and animations don't
         // build up (the 1 second frame callback timer will call this line).
         self.sync_stage_manager_auto_use_suppress();
-        self.niri.advance_animations();
+        let viewport_moved = self.niri.advance_animations();
+        if viewport_moved {
+            // Panning changes the surface below a stationary pointer. Refresh focus and the
+            // surface-local pointer coordinates even when no physical mouse event arrived.
+            self.refresh_pointer_contents();
+        }
 
         self.niri.redraw_queued_outputs(&mut self.backend);
 
@@ -3274,18 +3279,19 @@ impl Niri {
         }
 
         let (output, pos_within_output) = self.output_under(pos)?;
+        let content_pos = self.viewport_content_pos(output, pos_within_output);
 
         if self.is_sticky_obscured_under(output, pos_within_output) {
             return None;
         }
 
-        if self.is_layout_obscured_under(output, pos_within_output) {
+        if self.is_layout_obscured_under(output, content_pos) {
             return None;
         }
 
         let ws = self
             .layout
-            .workspace_under(extended_bounds, output, pos_within_output)?;
+            .workspace_under(extended_bounds, output, content_pos)?;
         Some((output.clone(), ws))
     }
 
@@ -3311,6 +3317,7 @@ impl Niri {
         }
 
         let (output, pos_within_output) = self.output_under(pos)?;
+        let content_pos = self.viewport_content_pos(output, pos_within_output);
 
         if self.is_sticky_obscured_under(output, pos_within_output) {
             return None;
@@ -3318,16 +3325,16 @@ impl Niri {
 
         if let Some((window, _loc)) = self
             .layout
-            .interactive_moved_window_under(output, pos_within_output)
+            .interactive_moved_window_under(output, content_pos)
         {
             return Some(window);
         }
 
-        if self.is_layout_obscured_under(output, pos_within_output) {
+        if self.is_layout_obscured_under(output, content_pos) {
             return None;
         }
 
-        let (window, _loc) = self.layout.window_under(output, pos_within_output)?;
+        let (window, _loc) = self.layout.window_under(output, content_pos)?;
         Some(window)
     }
 
@@ -3338,6 +3345,17 @@ impl Niri {
     pub fn window_under_cursor(&self) -> Option<&Mapped> {
         let pos = self.seat.get_pointer().unwrap().current_location();
         self.window_under(pos)
+    }
+
+    pub fn viewport_content_pos(
+        &self,
+        output: &Output,
+        screen_pos: Point<f64, Logical>,
+    ) -> Point<f64, Logical> {
+        self.output_state
+            .get(output)
+            .map(|state| state.viewport_zoom.screen_to_world(screen_pos))
+            .unwrap_or(screen_pos)
     }
 
     /// Returns contents under the given point.
@@ -3356,15 +3374,12 @@ impl Niri {
         let output_pos_in_global_space = self.global_space.output_geometry(output).unwrap().loc;
 
         let screen_pos_within_output = pos_within_output;
-        let content_pos_within_output = if let Some(st) = self.output_state.get(&output) {
-            if st.viewport_zoom.active {
-                st.viewport_zoom.screen_to_world(screen_pos_within_output)
-            } else {
-                screen_pos_within_output
-            }
-        } else {
-            screen_pos_within_output
-        };
+        let viewport_zoom = self
+            .output_state
+            .get(&output)
+            .map(|state| state.viewport_zoom)
+            .unwrap_or_default();
+        let content_pos_within_output = viewport_zoom.screen_to_world(screen_pos_within_output);
 
         // The ordering here must be consistent with the ordering in render() so that input is
         // consistent with the visuals.
@@ -3403,6 +3418,12 @@ impl Niri {
         let layers = layer_map_for_output(output);
         let content_pos = content_pos_within_output;
         let layer_surface_under = |layer, popup| {
+            let moves_with_viewport = matches!(layer, Layer::Background | Layer::Bottom);
+            let pointer_pos = if moves_with_viewport {
+                content_pos
+            } else {
+                screen_pos_within_output
+            };
             layers
                 .layers_on(layer)
                 .rev()
@@ -3432,10 +3453,18 @@ impl Niri {
                     } | WindowSurfaceType::SUBSURFACE;
 
                     layer_surface
-                        .surface_under(content_pos - layer_pos_within_output, surface_type)
+                        .surface_under(pointer_pos - layer_pos_within_output, surface_type)
                         .map(|(surface, pos_within_layer)| {
+                            let mut surface_pos =
+                                pos_within_layer.to_f64() + layer_pos_within_output;
+                            if moves_with_viewport {
+                                surface_pos = viewport_zoom.pointer_focus_origin(
+                                    screen_pos_within_output,
+                                    surface_pos,
+                                );
+                            }
                             (
-                                (surface, pos_within_layer.to_f64() + layer_pos_within_output),
+                                (surface, surface_pos),
                                 layer_surface,
                             )
                         })
@@ -3456,7 +3485,12 @@ impl Niri {
                         WindowSurfaceType::ALL,
                     )
                     .map(|(s, pos_within_window)| {
-                        (s, pos_within_window.to_f64() + win_pos_within_output)
+                        let world_pos = pos_within_window.to_f64() + win_pos_within_output;
+                        (
+                            s,
+                            viewport_zoom
+                                .pointer_focus_origin(screen_pos_within_output, world_pos),
+                        )
                     })
             } else {
                 None
@@ -3825,7 +3859,7 @@ impl Niri {
         state
             .viewport_zoom
             .update_pan_for_pointer(&config, output, pos);
-        old != state.viewport_zoom.pan
+        old != state.viewport_zoom.pan || state.viewport_zoom.edge_pan_ongoing(&config, output)
     }
 
     pub fn viewport_zoom_active_on_output(&self, output: &Output) -> bool {
@@ -3845,8 +3879,12 @@ impl Niri {
             .filter(|s| s.viewport_zoom.active)
             .map(|s| s.viewport_zoom.screen_to_world(screen_pos))
             .unwrap_or(screen_pos);
-        self.layout
-            .stage_manager_pointer_motion(output, content_pos);
+        if self
+            .layout
+            .stage_manager_pointer_motion(output, content_pos)
+        {
+            self.queue_redraw(output);
+        }
         if self.viewport_zoom_pointer_motion(output, screen_pos) {
             self.queue_redraw(output);
         }
@@ -4247,7 +4285,7 @@ impl Niri {
         }
     }
 
-    pub fn advance_animations(&mut self) {
+    pub fn advance_animations(&mut self) -> bool {
         let _span = tracy_client::span!("Niri::advance_animations");
 
         self.layout.advance_animations();
@@ -4256,13 +4294,23 @@ impl Niri {
         self.screenshot_ui.advance_animations();
         self.window_mru_ui.advance_animations();
 
-        for state in self.output_state.values_mut() {
+        let viewport_zoom = self.config.borrow().viewport_zoom;
+        let now = self.clock.now_unadjusted();
+        let mut viewport_moved = false;
+
+        for (output, state) in &mut self.output_state {
+            viewport_moved |=
+                state
+                    .viewport_zoom
+                    .advance_edge_pan(&viewport_zoom, output, now);
             if let Some(transition) = &mut state.screen_transition {
                 if transition.is_done() {
                     state.screen_transition = None;
                 }
             }
         }
+
+        viewport_moved
     }
 
     pub fn update_render_elements(&mut self, output: Option<&Output>) {
@@ -4801,6 +4849,9 @@ impl Niri {
             state.unfinished_animations_remain |= self.screenshot_ui.are_animations_ongoing();
             state.unfinished_animations_remain |= self.window_mru_ui.are_animations_ongoing();
             state.unfinished_animations_remain |= state.screen_transition.is_some();
+            state.unfinished_animations_remain |= state
+                .viewport_zoom
+                .edge_pan_ongoing(&self.config.borrow().viewport_zoom, output);
 
             // Also keep redrawing if the current cursor is animated.
             state.unfinished_animations_remain |= self
@@ -4815,8 +4866,32 @@ impl Niri {
                     .any(|mapped| mapped.are_animations_ongoing());
             }
 
+            // Apply the requested magnifier filter for this output. Restore linear afterwards so
+            // other outputs and offscreen rendering keep the compositor default.
+            let zoom_filter = if state.viewport_zoom.active
+                && self.config.borrow().viewport_zoom.zoom_filter
+                    == niri_config::ZoomFilter::Nearest
+            {
+                TextureFilter::Nearest
+            } else {
+                TextureFilter::Linear
+            };
+            backend.with_primary_renderer(|renderer| {
+                if let Err(err) = renderer.upscale_filter(zoom_filter) {
+                    warn!(?err, "error setting viewport zoom texture filter");
+                }
+            });
+
             // Render.
             res = backend.render(self, output, target_presentation_time);
+
+            if zoom_filter != TextureFilter::Linear {
+                backend.with_primary_renderer(|renderer| {
+                    if let Err(err) = renderer.upscale_filter(TextureFilter::Linear) {
+                        warn!(?err, "error restoring texture filter");
+                    }
+                });
+            }
         }
 
         let is_locked = self.is_locked();

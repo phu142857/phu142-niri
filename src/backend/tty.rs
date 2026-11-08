@@ -1930,6 +1930,13 @@ impl Tty {
                 }
             }
 
+            // Viewport magnification needs compositor sampling so the configured upscale filter
+            // is honored. A direct-scanout plane may use an implementation-defined KMS filter.
+            if niri.viewport_zoom_active_on_output(output) {
+                flags.remove(primary_scanout_flag);
+                flags.remove(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT);
+            }
+
             flags
         };
 

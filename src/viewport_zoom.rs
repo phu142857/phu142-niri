@@ -1,29 +1,22 @@
 //! Full-screen viewport zoom (magnifier) with pointer-follow panning.
 
+use std::time::Duration;
+
 use niri_config::ViewportZoom as ViewportZoomConfig;
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::utils::output_size;
 
-/// Screen-edge strip width for macOS Magnifier-style panning (logical px).
-const EDGE_PAN_MARGIN: f64 = 96.;
-
-/// How quickly pan approaches the edge target (0–1). Lower is slower.
-const EDGE_PAN_SPEED: f64 = 0.5;
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ViewportZoomState {
     pub active: bool,
     pub scale: f64,
     pub pan: Point<f64, Logical>,
-    /// Pan value when the cursor last entered an edge margin on each axis.
-    edge_pan_base: Point<f64, Logical>,
-    in_edge_x: bool,
-    in_edge_y: bool,
-    /// Last edge depth per axis; pan only updates when depth increases (pushing toward edge).
-    last_edge_depth_x: f64,
-    last_edge_depth_y: f64,
+    /// Last known pointer position in output-local screen coordinates.
+    edge_pointer: Point<f64, Logical>,
+    /// Last frame time used by velocity-based edge panning.
+    edge_pan_frame: Option<Duration>,
 }
 
 impl Default for ViewportZoomState {
@@ -32,11 +25,8 @@ impl Default for ViewportZoomState {
             active: false,
             scale: 1.,
             pan: Point::from((0., 0.)),
-            edge_pan_base: Point::from((0., 0.)),
-            in_edge_x: false,
-            in_edge_y: false,
-            last_edge_depth_x: 0.,
-            last_edge_depth_y: 0.,
+            edge_pointer: Point::from((0., 0.)),
+            edge_pan_frame: None,
         }
     }
 }
@@ -52,23 +42,15 @@ impl ViewportZoomState {
             self.active = false;
             self.scale = 1.;
             self.pan = Point::from((0., 0.));
-            self.in_edge_x = false;
-            self.in_edge_y = false;
-            self.last_edge_depth_x = 0.;
-            self.last_edge_depth_y = 0.;
+            self.edge_pan_frame = None;
         } else {
             self.active = true;
             self.scale = config.default_scale.clamp(config.min_scale, config.max_scale);
-            self.in_edge_x = false;
-            self.in_edge_y = false;
-            self.last_edge_depth_x = 0.;
-            self.last_edge_depth_y = 0.;
+            self.edge_pointer = pointer;
+            self.edge_pan_frame = None;
             // Anchor the point under the pointer on activation.
             self.set_pan_full_follow(pointer);
             self.clamp_pan(output);
-            if config.edge_pan {
-                self.update_pan_edge(output, pointer);
-            }
         }
     }
 
@@ -122,48 +104,7 @@ impl ViewportZoomState {
         self.pan.x = world.x - anchor.x / self.scale;
         self.pan.y = world.y - anchor.y / self.scale;
         self.clamp_pan(output);
-        self.in_edge_x = false;
-        self.in_edge_y = false;
-        self.last_edge_depth_x = 0.;
-        self.last_edge_depth_y = 0.;
-    }
-
-    fn reset_edge_pan_tracking(&mut self) {
-        self.in_edge_x = false;
-        self.in_edge_y = false;
-        self.last_edge_depth_x = 0.;
-        self.last_edge_depth_y = 0.;
-    }
-
-    fn update_pan_edge_axis(
-        pan: &mut f64,
-        edge_pan_base: &mut f64,
-        in_edge: &mut bool,
-        last_depth: &mut f64,
-        pointer_axis: f64,
-        depth: f64,
-        follow: f64,
-    ) {
-        if depth == 0. {
-            *in_edge = false;
-            *last_depth = 0.;
-            return;
-        }
-
-        if !*in_edge {
-            *edge_pan_base = *pan;
-            *in_edge = true;
-            *last_depth = 0.;
-        }
-
-        // Only scroll when pushing deeper toward the screen edge, not when pulling back.
-        if depth >= *last_depth {
-            let target = pointer_axis * follow;
-            let desired = *edge_pan_base + depth * (target - *edge_pan_base);
-            *pan += (desired - *pan) * EDGE_PAN_SPEED;
-        }
-
-        *last_depth = depth;
+        self.edge_pan_frame = None;
     }
 
     fn follow_factor(&self) -> f64 {
@@ -176,51 +117,26 @@ impl ViewportZoomState {
         self.pan.y = pointer.y * follow;
     }
 
-    /// How deep the cursor is into the screen-edge strip (0 = inner edge, 1 = screen edge).
-    fn edge_depth_x(x: f64, width: f64, margin: f64) -> f64 {
-        if x <= margin {
-            (margin - x) / margin
-        } else if x >= width - margin {
-            (x - (width - margin)) / margin
+    /// Signed edge depth: -1 at the leading edge, +1 at the trailing edge, 0 outside the zone.
+    fn edge_direction(position: f64, extent: f64, margin: f64) -> f64 {
+        let margin = margin.min(extent / 2.);
+        if margin <= 0. {
+            0.
+        } else if position < margin {
+            -((margin - position) / margin).clamp(0., 1.)
+        } else if position > extent - margin {
+            ((position - (extent - margin)) / margin).clamp(0., 1.)
         } else {
             0.
         }
     }
 
-    fn edge_depth_y(y: f64, height: f64, margin: f64) -> f64 {
-        Self::edge_depth_x(y, height, margin)
-    }
-
-    /// macOS Magnifier-style: frame locked in the center, pan when pushing the cursor to a
-    /// screen edge. Pan stays latched when pulling back toward the center.
-    fn update_pan_edge(&mut self, output: &Output, pointer: Point<f64, Logical>) {
+    fn edge_vector(&self, output: &Output, config: &ViewportZoomConfig) -> Point<f64, Logical> {
         let size = output_size(output);
-        let follow = self.follow_factor();
-        let margin = EDGE_PAN_MARGIN;
-
-        let depth_x = Self::edge_depth_x(pointer.x, size.w, margin);
-        let depth_y = Self::edge_depth_y(pointer.y, size.h, margin);
-
-        Self::update_pan_edge_axis(
-            &mut self.pan.x,
-            &mut self.edge_pan_base.x,
-            &mut self.in_edge_x,
-            &mut self.last_edge_depth_x,
-            pointer.x,
-            depth_x,
-            follow,
-        );
-        Self::update_pan_edge_axis(
-            &mut self.pan.y,
-            &mut self.edge_pan_base.y,
-            &mut self.in_edge_y,
-            &mut self.last_edge_depth_y,
-            pointer.y,
-            depth_y,
-            follow,
-        );
-
-        self.clamp_pan(output);
+        Point::from((
+            Self::edge_direction(self.edge_pointer.x, size.w, config.edge_margin),
+            Self::edge_direction(self.edge_pointer.y, size.h, config.edge_margin),
+        ))
     }
 
     /// With `edge_pan` off the view follows the cursor. With `edge_pan` on the magnified
@@ -236,12 +152,66 @@ impl ViewportZoomState {
         }
 
         if config.edge_pan {
-            self.update_pan_edge(output, pointer);
+            let was_at_edge = self.edge_vector(output, config) != Point::from((0., 0.));
+            self.edge_pointer = pointer;
+            let at_edge = self.edge_vector(output, config) != Point::from((0., 0.));
+            if !at_edge || !was_at_edge {
+                self.edge_pan_frame = None;
+            }
         } else {
             self.set_pan_full_follow(pointer);
             self.clamp_pan(output);
-            self.reset_edge_pan_tracking();
+            self.edge_pan_frame = None;
         }
+    }
+
+    /// Advance edge panning using elapsed time rather than input-event frequency.
+    pub fn advance_edge_pan(
+        &mut self,
+        config: &ViewportZoomConfig,
+        output: &Output,
+        now: Duration,
+    ) -> bool {
+        if !self.active || !config.edge_pan {
+            self.edge_pan_frame = None;
+            return false;
+        }
+
+        let direction = self.edge_vector(output, config);
+        if direction == Point::from((0., 0.)) {
+            self.edge_pan_frame = None;
+            return false;
+        }
+
+        let Some(previous) = self.edge_pan_frame.replace(now) else {
+            return false;
+        };
+        let dt = now.saturating_sub(previous).as_secs_f64().min(0.05);
+        if dt == 0. {
+            return false;
+        }
+
+        let old = self.pan;
+        let world_speed = config.edge_pan_speed / self.scale;
+        self.pan.x += direction.x * world_speed * dt;
+        self.pan.y += direction.y * world_speed * dt;
+        self.clamp_pan(output);
+        self.pan != old
+    }
+
+    pub fn edge_pan_ongoing(&self, config: &ViewportZoomConfig, output: &Output) -> bool {
+        if !self.active || !config.edge_pan {
+            return false;
+        }
+
+        let direction = self.edge_vector(output, config);
+        let size = output_size(output);
+        let max_x = (size.w - size.w / self.scale).max(0.);
+        let max_y = (size.h - size.h / self.scale).max(0.);
+        (direction.x < 0. && self.pan.x > 0.)
+            || (direction.x > 0. && self.pan.x < max_x)
+            || (direction.y < 0. && self.pan.y > 0.)
+            || (direction.y > 0. && self.pan.y < max_y)
     }
 
     fn clamp_pan(&mut self, output: &Output) {
@@ -274,6 +244,18 @@ impl ViewportZoomState {
         ))
     }
 
+    /// Smithay's pointer focus accepts only a translated surface origin, while viewport zoom also
+    /// scales coordinates. Return a per-motion synthetic origin that makes
+    /// `screen_pointer - focus_origin` equal the correct unscaled surface-local position.
+    pub fn pointer_focus_origin(
+        &self,
+        screen_pointer: Point<f64, Logical>,
+        world_surface_origin: Point<f64, Logical>,
+    ) -> Point<f64, Logical> {
+        let world_pointer = self.screen_to_world(screen_pointer);
+        screen_pointer - (world_pointer - world_surface_origin)
+    }
+
     pub fn transform_geo(&self, geo: Rectangle<f64, Logical>) -> Rectangle<f64, Logical> {
         if !self.active {
             return geo;
@@ -293,5 +275,81 @@ impl ViewportZoomState {
         } else {
             zoom
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::output::{Mode, PhysicalProperties, Subpixel};
+
+    use super::*;
+
+    fn output() -> Output {
+        let output = Output::new(
+            "zoom-test".into(),
+            PhysicalProperties {
+                size: Size::from((1000, 800)),
+                subpixel: Subpixel::Unknown,
+                make: String::new(),
+                model: String::new(),
+                serial_number: String::new(),
+            },
+        );
+        output.change_current_state(
+            Some(Mode {
+                size: Size::from((1000, 800)),
+                refresh: 60_000,
+            }),
+            None,
+            None,
+            None,
+        );
+        output
+    }
+
+    #[test]
+    fn screen_and_world_coordinates_round_trip() {
+        let mut state = ViewportZoomState::default();
+        state.active = true;
+        state.scale = 2.;
+        state.pan = Point::from((125., 80.));
+        let screen = Point::from((640., 360.));
+        assert_eq!(state.world_to_screen(state.screen_to_world(screen)), screen);
+    }
+
+    #[test]
+    fn pointer_focus_origin_preserves_unscaled_surface_local_coordinates() {
+        let mut state = ViewportZoomState::default();
+        state.active = true;
+        state.scale = 2.;
+        state.pan = Point::from((125., 80.));
+        let screen_pointer = Point::from((640., 360.));
+        let surface_world_origin = Point::from((300., 150.));
+        let focus_origin = state.pointer_focus_origin(screen_pointer, surface_world_origin);
+
+        assert_eq!(
+            screen_pointer - focus_origin,
+            state.screen_to_world(screen_pointer) - surface_world_origin
+        );
+    }
+
+    #[test]
+    fn edge_pan_advances_by_elapsed_time() {
+        let output = output();
+        let config = ViewportZoomConfig {
+            edge_pan: true,
+            edge_margin: 100.,
+            edge_pan_speed: 1000.,
+            default_scale: 2.,
+            ..Default::default()
+        };
+        let mut state = ViewportZoomState::default();
+        state.toggle(&config, &output, Point::from((500., 400.)));
+        state.update_pan_for_pointer(&config, &output, Point::from((1000., 400.)));
+
+        assert!(!state.advance_edge_pan(&config, &output, Duration::ZERO));
+        let before = state.pan.x;
+        assert!(state.advance_edge_pan(&config, &output, Duration::from_millis(16)));
+        assert!((state.pan.x - before - 8.).abs() < 0.001);
     }
 }

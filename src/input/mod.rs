@@ -21,10 +21,11 @@ use smithay::backend::libinput::LibinputInputBackend;
 use smithay::input::dnd::DnDGrab;
 use smithay::input::keyboard::{keysyms, FilterResult, Keysym, Layout, ModifiersState};
 use smithay::input::pointer::{
-    AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, Focus, GestureHoldBeginEvent,
+    AxisFrame, ButtonEvent, ClickGrab, CursorIcon, CursorImageStatus, Focus, GestureHoldBeginEvent,
     GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent,
     GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
-    GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab, RelativeMotionEvent,
+    GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab, PointerInnerHandle,
+    RelativeMotionEvent,
 };
 use smithay::input::touch::{
     DownEvent, GrabStartData as TouchGrabStartData, MotionEvent as TouchMotionEvent, UpEvent,
@@ -78,6 +79,192 @@ pub struct TabletData {
 pub enum PointerOrTouchStartData<D: SeatHandler> {
     Pointer(PointerGrabStartData<D>),
     Touch(TouchGrabStartData<D>),
+}
+
+/// Implicit click grab that keeps scaled viewport coordinates correct while dragging.
+struct ViewportZoomClickGrab {
+    start_data: PointerGrabStartData<State>,
+    output: Output,
+    surface: WlSurface,
+    world_surface_origin: Point<f64, Logical>,
+}
+
+impl ViewportZoomClickGrab {
+    fn new(state: &State, button: u32) -> Option<Self> {
+        let pointer = state.niri.seat.get_pointer()?;
+        let location = pointer.current_location();
+        let (surface, focus_origin) = state.niri.pointer_contents.surface.clone()?;
+        let (output, screen_pos) = state.niri.output_under(location)?;
+        let viewport = state.niri.output_state.get(output)?.viewport_zoom;
+        if !viewport.active {
+            return None;
+        }
+
+        let surface_local = location - focus_origin;
+        let world_surface_origin = viewport.screen_to_world(screen_pos) - surface_local;
+        Some(Self {
+            start_data: PointerGrabStartData {
+                focus: Some((surface.clone(), focus_origin)),
+                button,
+                location,
+            },
+            output: output.clone(),
+            surface,
+            world_surface_origin,
+        })
+    }
+
+    fn focus_at(
+        &self,
+        state: &State,
+        location: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let output_loc = state.niri.global_space.output_geometry(&self.output)?.loc.to_f64();
+        let screen_pos = location - output_loc;
+        let viewport = state.niri.output_state.get(&self.output)?.viewport_zoom;
+        let surface_local = viewport.screen_to_world(screen_pos) - self.world_surface_origin;
+        Some((self.surface.clone(), location - surface_local))
+    }
+}
+
+impl PointerGrab<State> for ViewportZoomClickGrab {
+    fn motion(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        _focus: Option<(WlSurface, Point<f64, Logical>)>,
+        event: &MotionEvent,
+    ) {
+        let focus = self
+            .focus_at(data, event.location)
+            .or_else(|| self.start_data.focus.clone());
+        handle.motion(data, focus, event);
+    }
+
+    fn relative_motion(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        focus: Option<(WlSurface, Point<f64, Logical>)>,
+        event: &RelativeMotionEvent,
+    ) {
+        let scale = data
+            .niri
+            .output_state
+            .get(&self.output)
+            .filter(|state| state.viewport_zoom.active)
+            .map(|state| state.viewport_zoom.scale)
+            .unwrap_or(1.);
+        let event = RelativeMotionEvent {
+            delta: event.delta.downscale(scale),
+            delta_unaccel: event.delta_unaccel.downscale(scale),
+            utime: event.utime,
+        };
+        handle.relative_motion(data, focus, &event);
+    }
+
+    fn button(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &ButtonEvent,
+    ) {
+        handle.button(data, event);
+        if handle.current_pressed().is_empty() {
+            handle.unset_grab(self, data, event.serial, event.time, false);
+        }
+    }
+
+    fn axis(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        details: AxisFrame,
+    ) {
+        handle.axis(data, details);
+    }
+
+    fn frame(&mut self, data: &mut State, handle: &mut PointerInnerHandle<'_, State>) {
+        handle.frame(data);
+    }
+
+    fn gesture_swipe_begin(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GestureSwipeBeginEvent,
+    ) {
+        handle.gesture_swipe_begin(data, event);
+    }
+
+    fn gesture_swipe_update(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GestureSwipeUpdateEvent,
+    ) {
+        handle.gesture_swipe_update(data, event);
+    }
+
+    fn gesture_swipe_end(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GestureSwipeEndEvent,
+    ) {
+        handle.gesture_swipe_end(data, event);
+    }
+
+    fn gesture_pinch_begin(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GesturePinchBeginEvent,
+    ) {
+        handle.gesture_pinch_begin(data, event);
+    }
+
+    fn gesture_pinch_update(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GesturePinchUpdateEvent,
+    ) {
+        handle.gesture_pinch_update(data, event);
+    }
+
+    fn gesture_pinch_end(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GesturePinchEndEvent,
+    ) {
+        handle.gesture_pinch_end(data, event);
+    }
+
+    fn gesture_hold_begin(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GestureHoldBeginEvent,
+    ) {
+        handle.gesture_hold_begin(data, event);
+    }
+
+    fn gesture_hold_end(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GestureHoldEndEvent,
+    ) {
+        handle.gesture_hold_end(data, event);
+    }
+
+    fn start_data(&self) -> &PointerGrabStartData<State> {
+        &self.start_data
+    }
+
+    fn unset(&mut self, _data: &mut State) {}
 }
 
 impl<D: SeatHandler> PointerOrTouchStartData<D> {
@@ -3021,10 +3208,11 @@ impl State {
                 else if button == Some(MouseButton::Right) && !pointer.is_grabbed() && mod_down {
                     let location = pointer.current_location();
                     let (output, pos_within_output) = self.niri.output_under(location).unwrap();
+                    let content_pos = self.niri.viewport_content_pos(output, pos_within_output);
                     let edges = self
                         .niri
                         .layout
-                        .resize_edges_under(output, pos_within_output)
+                        .resize_edges_under(output, content_pos)
                         .unwrap_or(ResizeEdge::empty());
 
                     if !edges.is_empty() {
@@ -3164,6 +3352,10 @@ impl State {
             }
         }
 
+        let viewport_zoom_grab = (button_state == ButtonState::Pressed && !pointer.is_grabbed())
+            .then(|| ViewportZoomClickGrab::new(self, button_code))
+            .flatten();
+
         pointer.button(
             self,
             &ButtonEvent {
@@ -3173,6 +3365,15 @@ impl State {
                 time: event.time_msec(),
             },
         );
+
+        if let Some(grab) = viewport_zoom_grab {
+            let is_default_click_grab = pointer
+                .with_grab(|_, current| current.is::<ClickGrab<State>>())
+                .unwrap_or(false);
+            if is_default_click_grab {
+                pointer.set_grab(self, grab, serial, Focus::Keep);
+            }
+        }
         pointer.frame(self);
     }
 

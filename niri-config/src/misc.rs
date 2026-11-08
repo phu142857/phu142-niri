@@ -220,6 +220,12 @@ pub struct ViewportZoom {
     /// When true, lock the magnified frame in place and pan only at the screen edges
     /// (macOS Magnifier-style).
     pub edge_pan: bool,
+    /// Width of the screen-edge pan zone in logical pixels.
+    pub edge_margin: f64,
+    /// Maximum edge-pan speed in screen logical pixels per second.
+    pub edge_pan_speed: f64,
+    /// Texture filter used when magnifying the viewport.
+    pub zoom_filter: ZoomFilter,
 }
 
 impl Default for ViewportZoom {
@@ -231,8 +237,18 @@ impl Default for ViewportZoom {
             step: 0.1,
             wheel_step: 0.05,
             edge_pan: false,
+            edge_margin: 96.0,
+            edge_pan_speed: 900.0,
+            zoom_filter: ZoomFilter::Linear,
         }
     }
+}
+
+#[derive(knuffel::DecodeScalar, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ZoomFilter {
+    #[default]
+    Linear,
+    Nearest,
 }
 
 #[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]
@@ -249,9 +265,12 @@ pub struct ViewportZoomPart {
     pub wheel_step: Option<FloatOrInt<0, 1>>,
     #[knuffel(child)]
     pub edge_pan: Option<Flag>,
-    /// Ignored (removed).
     #[knuffel(child, unwrap(argument))]
     pub edge_margin: Option<FloatOrInt<0, 4096>>,
+    #[knuffel(child, unwrap(argument))]
+    pub edge_pan_speed: Option<FloatOrInt<1, 10000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub zoom_filter: Option<ZoomFilter>,
     /// Ignored (removed).
     #[knuffel(child, unwrap(argument))]
     pub dead_zone_width: Option<FloatOrInt<0, 4096>>,
@@ -279,6 +298,15 @@ impl MergeWith<ViewportZoomPart> for ViewportZoom {
             self.wheel_step = v.0;
         }
         merge!((self, part), edge_pan);
+        if let Some(v) = part.edge_margin {
+            self.edge_margin = v.0;
+        }
+        if let Some(v) = part.edge_pan_speed.filter(|v| v.0 > 0.) {
+            self.edge_pan_speed = v.0;
+        }
+        if let Some(v) = part.zoom_filter {
+            self.zoom_filter = v;
+        }
         self.min_scale = self.min_scale.clamp(1.0, 64.0);
         self.max_scale = self.max_scale.clamp(self.min_scale, 64.0);
         self.default_scale = self.default_scale.clamp(self.min_scale, self.max_scale);

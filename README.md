@@ -116,6 +116,12 @@ layout {
 
         auto-use-as-main true
         auto-use-as-main-delay-ms 0
+
+        auto-hide-stack true
+        auto-hide-reveal-delay-ms 2000
+        auto-hide-dismiss-delay-ms 1000
+        auto-hide-edge-width 4
+        auto-hide-center-main true
     }
 }
 ```
@@ -129,6 +135,11 @@ layout {
 | `thumb-scale` | `0.19` | Kích thước thumbnail (0.1 – 0.3) |
 | `auto-use-as-main` | `true` | Focus thumbnail (bàn phím) → tự lên main |
 | `auto-use-as-main-delay-ms` | `0` | Không chờ; lên main ngay khi focus stack |
+| `auto-hide-stack` | `true` | Ẩn cast strip khi không sử dụng |
+| `auto-hide-reveal-delay-ms` | `2000` | Giữ chuột ở cạnh màn hình 2 giây để hiện strip |
+| `auto-hide-dismiss-delay-ms` | `1000` | Ẩn strip sau khi chuột rời strip 1 giây |
+| `auto-hide-edge-width` | `4` | Độ rộng vùng kích hoạt sát cạnh, tính bằng logical pixel |
+| `auto-hide-center-main` | `true` | Khi strip ẩn, căn giữa main trong toàn working area theo kích thước đã lưu |
 
 `proportion` (cũ) vẫn dùng được — gán cả ngang và dọc cùng một giá trị nếu không ghi riêng.
 
@@ -160,6 +171,7 @@ binds {
 - **Click thumbnail** trên cast strip → app đó lên main, thay app main hiện tại.
 - **Kéo thumbnail** lên vùng main → cùng hiệu ứng thay thế / merge tùy vị trí thả.
 - **`auto-use-as-main true`**: focus thumbnail trên stack (bàn phím) → app tự lên main sau `auto-use-as-main-delay-ms` (`0` = ngay lập tức). Giữ kích thước đã resize thủ công. Hover chuột không kích hoạt.
+- **`auto-hide-stack true`**: giữ chuột ở cạnh `stack-position` đủ thời gian hoặc nhấn phím điều hướng về phía cạnh đó để hiện stack. Chọn main hoặc rời stack đủ lâu sẽ ẩn lại.
 
 Config reload live: sửa `config.kdl` và lưu — niri tự nạp lại (trừ vài thay đổi cần restart session).
 

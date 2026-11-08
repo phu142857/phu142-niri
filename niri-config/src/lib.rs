@@ -652,6 +652,26 @@ mod tests {
         assert_eq!(config.input.keyboard.repeat_rate, 25);
     }
 
+    #[test]
+    fn viewport_zoom_edge_pan_options_parse() {
+        let config = Config::parse_mem(
+            r#"
+            viewport-zoom {
+                edge-pan
+                edge-margin 64
+                edge-pan-speed 720
+                zoom-filter "nearest"
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert!(config.viewport_zoom.edge_pan);
+        assert_eq!(config.viewport_zoom.edge_margin, 64.);
+        assert_eq!(config.viewport_zoom.edge_pan_speed, 720.);
+        assert_eq!(config.viewport_zoom.zoom_filter, ZoomFilter::Nearest);
+    }
+
     #[track_caller]
     fn do_parse(text: &str) -> Config {
         Config::parse_mem(text)

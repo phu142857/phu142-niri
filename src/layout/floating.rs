@@ -1295,8 +1295,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
             self.working_area.loc.x + self.working_area.size.w,
             self.working_area.loc.y + self.working_area.size.h,
         ));
+        self.data[idx].update(&self.tiles[idx]);
         self.data[idx].set_logical_pos(pos);
-        self.data[idx].size = Size::from((1., 1.));
     }
 
     pub fn stage_window_size(&self, id: &W::Id) -> Option<Size<i32, Logical>> {

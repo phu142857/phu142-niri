@@ -179,6 +179,16 @@ pub struct StageManagerConfig {
     pub auto_use_as_main: bool,
     /// Dwell time before auto-use-as-main triggers (milliseconds).
     pub auto_use_as_main_delay_ms: u32,
+    /// Hide the cast strip until it is revealed from the configured screen edge.
+    pub auto_hide_stack: bool,
+    /// Pointer dwell time at the screen edge before revealing the cast strip.
+    pub auto_hide_reveal_delay_ms: u32,
+    /// Delay after the pointer leaves the cast strip before hiding it.
+    pub auto_hide_dismiss_delay_ms: u32,
+    /// Width in logical pixels of the edge reveal zone.
+    pub auto_hide_edge_width: f64,
+    /// Center the main stage in the full working area while the cast strip is hidden.
+    pub auto_hide_center_main: bool,
 }
 
 impl Default for StageManagerConfig {
@@ -192,6 +202,11 @@ impl Default for StageManagerConfig {
             stack_by_app: false,
             auto_use_as_main: false,
             auto_use_as_main_delay_ms: 2000,
+            auto_hide_stack: false,
+            auto_hide_reveal_delay_ms: 2000,
+            auto_hide_dismiss_delay_ms: 1000,
+            auto_hide_edge_width: 4.,
+            auto_hide_center_main: true,
         }
     }
 }
@@ -240,6 +255,26 @@ impl StageManagerConfig {
             .auto_use_as_main_delay_ms
             .map(|n| n.0 as u32)
             .unwrap_or(Self::default().auto_use_as_main_delay_ms);
+        let auto_hide_stack = part
+            .auto_hide_stack
+            .map(|f| f.0)
+            .unwrap_or(default.auto_hide_stack);
+        let auto_hide_reveal_delay_ms = part
+            .auto_hide_reveal_delay_ms
+            .map(|n| n.0 as u32)
+            .unwrap_or(default.auto_hide_reveal_delay_ms);
+        let auto_hide_dismiss_delay_ms = part
+            .auto_hide_dismiss_delay_ms
+            .map(|n| n.0 as u32)
+            .unwrap_or(default.auto_hide_dismiss_delay_ms);
+        let auto_hide_edge_width = part
+            .auto_hide_edge_width
+            .map(|n| n.0)
+            .unwrap_or(default.auto_hide_edge_width);
+        let auto_hide_center_main = part
+            .auto_hide_center_main
+            .map(|f| f.0)
+            .unwrap_or(default.auto_hide_center_main);
         let stack_position = part
             .stack_position
             .unwrap_or(Self::default().stack_position);
@@ -252,6 +287,11 @@ impl StageManagerConfig {
             stack_by_app,
             auto_use_as_main,
             auto_use_as_main_delay_ms: auto_use_as_main_delay_ms.clamp(0, 60_000),
+            auto_hide_stack,
+            auto_hide_reveal_delay_ms: auto_hide_reveal_delay_ms.clamp(0, 60_000),
+            auto_hide_dismiss_delay_ms: auto_hide_dismiss_delay_ms.clamp(0, 60_000),
+            auto_hide_edge_width: auto_hide_edge_width.clamp(1., 100.),
+            auto_hide_center_main,
         }
     }
 }
@@ -276,6 +316,16 @@ pub struct StageManagerPart {
     pub auto_use_as_main: Option<crate::utils::Flag>,
     #[knuffel(child, unwrap(argument))]
     pub auto_use_as_main_delay_ms: Option<FloatOrInt<0, 60000>>,
+    #[knuffel(child)]
+    pub auto_hide_stack: Option<crate::utils::Flag>,
+    #[knuffel(child, unwrap(argument))]
+    pub auto_hide_reveal_delay_ms: Option<FloatOrInt<0, 60000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub auto_hide_dismiss_delay_ms: Option<FloatOrInt<0, 60000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub auto_hide_edge_width: Option<FloatOrInt<1, 100>>,
+    #[knuffel(child)]
+    pub auto_hide_center_main: Option<crate::utils::Flag>,
 }
 
 #[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]
@@ -373,6 +423,36 @@ mod tests {
         assert!(!sm.stack_by_app);
         assert!(!sm.auto_use_as_main);
         assert_eq!(sm.auto_use_as_main_delay_ms, 2000);
+        assert!(!sm.auto_hide_stack);
+        assert_eq!(sm.auto_hide_reveal_delay_ms, 2000);
+        assert_eq!(sm.auto_hide_dismiss_delay_ms, 1000);
+        assert!((sm.auto_hide_edge_width - 4.).abs() < f64::EPSILON);
+        assert!(sm.auto_hide_center_main);
+    }
+
+    #[test]
+    fn stage_manager_auto_hide_parses() {
+        let config = Config::parse_mem(
+            r#"
+            layout {
+                stage-manager {
+                    auto-hide-stack true
+                    auto-hide-reveal-delay-ms 1500
+                    auto-hide-dismiss-delay-ms 750
+                    auto-hide-edge-width 8
+                    auto-hide-center-main false
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let sm = config.layout.stage_manager.unwrap();
+        assert!(sm.auto_hide_stack);
+        assert_eq!(sm.auto_hide_reveal_delay_ms, 1500);
+        assert_eq!(sm.auto_hide_dismiss_delay_ms, 750);
+        assert!((sm.auto_hide_edge_width - 8.).abs() < f64::EPSILON);
+        assert!(!sm.auto_hide_center_main);
     }
 
     #[test]

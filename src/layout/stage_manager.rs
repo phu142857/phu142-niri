@@ -110,6 +110,12 @@ pub struct StageManagerState<W: LayoutElement> {
     interactive_move_stage: Option<W::Id>,
     /// Dialogs overlaid on their parent while both remain on the stage.
     stage_dialog_parents: Vec<(W::Id, W::Id)>,
+    /// Whether an auto-hidden cast strip is currently revealed.
+    stack_revealed: bool,
+    /// Start of the pointer dwell in the edge reveal zone.
+    stack_reveal_since: Option<Duration>,
+    /// Start of the pointer dwell outside the revealed cast strip.
+    stack_dismiss_since: Option<Duration>,
 }
 
 impl<W: LayoutElement> StageManagerState<W> {
@@ -126,7 +132,40 @@ impl<W: LayoutElement> StageManagerState<W> {
             new_cast_windows: Vec::new(),
             interactive_move_stage: None,
             stage_dialog_parents: Vec::new(),
+            stack_revealed: false,
+            stack_reveal_since: None,
+            stack_dismiss_since: None,
         }
+    }
+
+    pub fn stack_visible(&self, config: &StageManagerConfig) -> bool {
+        !config.auto_hide_stack || self.stack_revealed
+    }
+
+    pub fn reveal_stack(&mut self) -> bool {
+        self.stack_reveal_since = None;
+        self.stack_dismiss_since = None;
+        if self.stack_revealed {
+            return false;
+        }
+        self.stack_revealed = true;
+        true
+    }
+
+    pub fn hide_stack(&mut self) -> bool {
+        self.stack_reveal_since = None;
+        self.stack_dismiss_since = None;
+        self.hovered_cast = None;
+        if !self.stack_revealed {
+            return false;
+        }
+        self.stack_revealed = false;
+        true
+    }
+
+    pub fn auto_hide_timer_active(&self, config: &StageManagerConfig) -> bool {
+        config.auto_hide_stack
+            && (self.stack_reveal_since.is_some() || self.stack_dismiss_since.is_some())
     }
 
     pub fn begin_interactive_move_stage(&mut self, id: W::Id) {
@@ -1103,6 +1142,17 @@ pub fn try_focus_neighbor<W: LayoutElement>(
     }
 
     if state.is_stage_window(active) {
+        let toward_stack = matches!(
+            (config.stack_position, direction),
+            (StackPosition::Left, FocusDirection::Left)
+                | (StackPosition::Right, FocusDirection::Right)
+                | (StackPosition::Top, FocusDirection::Up)
+                | (StackPosition::Bottom, FocusDirection::Down)
+        );
+        if toward_stack {
+            return cast_stack_window_ids(state).into_iter().next();
+        }
+
         let allowed = state.active_windows();
         let distance = match direction {
             FocusDirection::Up => {
@@ -1122,6 +1172,49 @@ pub fn try_focus_neighbor<W: LayoutElement>(
     }
 
     None
+}
+
+fn pointer_in_edge_reveal_zone(
+    point: Point<f64, Logical>,
+    view_rect: Rectangle<f64, Logical>,
+    working_area: Rectangle<f64, Logical>,
+    config: &StageManagerConfig,
+) -> bool {
+    if !view_rect.contains(point) {
+        return false;
+    }
+
+    let left = view_rect.loc.x;
+    let top = view_rect.loc.y;
+    let right = left + view_rect.size.w;
+    let bottom = top + view_rect.size.h;
+    let width = config.auto_hide_edge_width;
+
+    // Anchor the reveal zone to the physical output edge selected by stack-position. Keep its
+    // orthogonal span inside the working area so panels on other edges do not create surprising
+    // hot zones. An exclusive zone on the selected edge must not make the stack unreachable.
+    match config.stack_position {
+        StackPosition::Left => {
+            point.x < left + width
+                && point.y >= working_area.loc.y
+                && point.y < working_area.loc.y + working_area.size.h
+        }
+        StackPosition::Right => {
+            point.x >= right - width
+                && point.y >= working_area.loc.y
+                && point.y < working_area.loc.y + working_area.size.h
+        }
+        StackPosition::Top => {
+            point.y < top + width
+                && point.x >= working_area.loc.x
+                && point.x < working_area.loc.x + working_area.size.w
+        }
+        StackPosition::Bottom => {
+            point.y >= bottom - width
+                && point.x >= working_area.loc.x
+                && point.x < working_area.loc.x + working_area.size.w
+        }
+    }
 }
 
 pub fn pointer_in_stack_area(
@@ -1152,6 +1245,9 @@ pub fn cross_monitor_move_finish<W: LayoutElement>(
     window: &W::Id,
 ) -> bool {
     state.set_stage_single(workspace, window.clone(), config.max_cast_groups);
+    if config.auto_hide_stack {
+        state.hide_stack();
+    }
     reset_main_layout(workspace, state);
 
     reorganize(workspace, state);
@@ -1184,6 +1280,9 @@ pub fn strip_drag_end<W: LayoutElement>(
     }
 
     if changed {
+        if config.auto_hide_stack && state.is_stage_window(window) {
+            state.hide_stack();
+        }
         reorganize(workspace, state);
     }
     apply_geometry(workspace, config, state);
@@ -1231,7 +1330,7 @@ pub fn pointer_motion<W: LayoutElement>(
     state: &mut StageManagerState<W>,
     point: Point<f64, Logical>,
 ) -> bool {
-    if state.parallel_stage_active(workspace) {
+    if state.parallel_stage_active(workspace) && !config.auto_hide_stack {
         return false;
     }
 
@@ -1242,6 +1341,35 @@ pub fn pointer_motion<W: LayoutElement>(
     }
 
     let working_area = workspace.working_area();
+    let mut auto_hide_changed = false;
+
+    if config.auto_hide_stack {
+        let now = workspace.clock.now_unadjusted();
+        if !state.stack_revealed {
+            let at_edge =
+                pointer_in_edge_reveal_zone(point, workspace.view_rect(), working_area, config);
+            let changed = if at_edge {
+                if state.stack_reveal_since.is_none() {
+                    state.stack_reveal_since = Some(now);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                state.stack_reveal_since.take().is_some()
+            };
+            state.stack_dismiss_since = None;
+            return changed;
+        }
+
+        state.stack_reveal_since = None;
+        if pointer_in_stack_area(point, working_area, config) {
+            auto_hide_changed = state.stack_dismiss_since.take().is_some();
+        } else if state.stack_dismiss_since.is_none() {
+            state.stack_dismiss_since = Some(now);
+            auto_hide_changed = true;
+        }
+    }
 
     let hovered = if pointer_in_stack_area(point, working_area, config) {
         hit_test_cast_groups(point, &state.cast_group_layouts)
@@ -1249,12 +1377,46 @@ pub fn pointer_motion<W: LayoutElement>(
         None
     };
 
-    if !state.set_hovered_cast(hovered) {
+    let hover_changed = state.set_hovered_cast(hovered);
+    if hover_changed {
+        reorganize(workspace, state);
+        apply_geometry(workspace, config, state);
+    }
+    hover_changed || auto_hide_changed
+}
+
+/// Advance edge-reveal and dismiss timers for an auto-hidden cast strip.
+pub fn tick_auto_hide<W: LayoutElement>(
+    workspace: &Workspace<W>,
+    config: &StageManagerConfig,
+    state: &mut StageManagerState<W>,
+) -> bool {
+    if !config.auto_hide_stack {
+        state.stack_reveal_since = None;
+        state.stack_dismiss_since = None;
         return false;
     }
-    reorganize(workspace, state);
-    apply_geometry(workspace, config, state);
-    true
+
+    if state.has_stage_modal_overlay(workspace) {
+        return state.hide_stack();
+    }
+
+    let now = workspace.clock.now_unadjusted();
+    if let Some(since) = state.stack_reveal_since {
+        let delay = Duration::from_millis(config.auto_hide_reveal_delay_ms.into());
+        if now.saturating_sub(since) >= delay {
+            return state.reveal_stack();
+        }
+    }
+
+    if let Some(since) = state.stack_dismiss_since {
+        let delay = Duration::from_millis(config.auto_hide_dismiss_delay_ms.into());
+        if now.saturating_sub(since) >= delay {
+            return state.hide_stack();
+        }
+    }
+
+    false
 }
 
 /// Promote a focused cast slot to main after the dwell delay.
@@ -1532,21 +1694,26 @@ fn apply_geometry<W: LayoutElement>(
     state.prune_absent_windows(workspace, config.max_cast_groups);
 
     let working_area = workspace.working_area();
-    let areas = compute_areas(working_area, config);
-    let (thumb_width, thumb_height) = cast_thumb_size(working_area, areas, config);
+    let stack_visible = state.stack_visible(config);
+    let stage_area = if stack_visible {
+        let areas = compute_areas(working_area, config);
+        let (thumb_width, thumb_height) = cast_thumb_size(working_area, areas, config);
+        scroll_stack_to_focused_cast(workspace, config, state, areas, thumb_width, thumb_height);
+        state.cast_group_layouts = apply_cast_strip(
+            workspace,
+            config,
+            areas,
+            thumb_width,
+            thumb_height,
+            state,
+        );
+        areas.stage_area
+    } else {
+        hide_cast_strip(workspace, state);
+        working_area
+    };
 
-    scroll_stack_to_focused_cast(workspace, config, state, areas, thumb_width, thumb_height);
-
-    state.cast_group_layouts = apply_cast_strip(
-        workspace,
-        config,
-        areas,
-        thumb_width,
-        thumb_height,
-        state,
-    );
-
-    apply_stage_geometry(workspace, config, areas.stage_area, state);
+    apply_stage_geometry(workspace, config, stage_area, state, stack_visible);
 
     if let Some(active) = workspace.active_window().map(|w| w.id().clone()) {
         if state.is_cast_window(&active) {
@@ -1564,6 +1731,19 @@ fn apply_geometry<W: LayoutElement>(
     }
 
     workspace.scrolling.set_view_offset_for_stage_manager(0.);
+}
+
+fn hide_cast_strip<W: LayoutElement>(
+    workspace: &mut Workspace<W>,
+    state: &mut StageManagerState<W>,
+) {
+    state.cast_group_layouts.clear();
+    for group in state.cast_groups.iter().chain(state.hidden_groups.iter()) {
+        for id in &group.windows {
+            move_to_floating(workspace, id);
+            workspace.floating.set_stage_manager_strip_inert(id);
+        }
+    }
 }
 
 fn apply_cast_strip<W: LayoutElement>(
@@ -1773,6 +1953,7 @@ fn apply_stage_geometry<W: LayoutElement>(
     config: &StageManagerConfig,
     stage_area: Rectangle<f64, Logical>,
     state: &StageManagerState<W>,
+    stack_visible: bool,
 ) {
     let Some(group) = &state.active_group else {
         return;
@@ -1814,7 +1995,16 @@ fn apply_stage_geometry<W: LayoutElement>(
         }
 
         if n > 1 {
-            let (main_span, cross_span, main_offset) = if vertical_stack {
+            let (main_span, cross_span, main_offset) = if !stack_visible
+                && config.auto_hide_center_main
+            {
+                let main_span = stage_width_default.min(stage_inner_width);
+                (
+                    main_span,
+                    stage_height_default.min(stage_inner_height),
+                    (stage_inner_width - main_span) / 2.,
+                )
+            } else if vertical_stack {
                 (stage_inner_width, stage_height_default, 0.)
             } else {
                 (
@@ -1835,6 +2025,21 @@ fn apply_stage_geometry<W: LayoutElement>(
                 cross_span.round().max(1.) as i32,
             ));
             let x = main_left + i as f64 * (slot_width + gap);
+            let y = stage_area.loc.y + (stage_inner_height - f64::from(size.h)) / 2.;
+            set_stage_window_geometry(workspace, id, size, Point::from((x, y)));
+            continue;
+        }
+
+        if !stack_visible && config.auto_hide_center_main {
+            let avail_w = (config.target_stage_width() - pad)
+                .min(stage_inner_width)
+                .max(1.);
+            let avail_h = (config.target_stage_height() - pad)
+                .min(stage_inner_height)
+                .max(1.);
+            let saved = workspace.floating.stage_manager_saved_size(id);
+            let size = resolve_stage_window_size(saved, avail_w, avail_h);
+            let x = stage_area.loc.x + (stage_inner_width - f64::from(size.w)) / 2.;
             let y = stage_area.loc.y + (stage_inner_height - f64::from(size.h)) / 2.;
             set_stage_window_geometry(workspace, id, size, Point::from((x, y)));
             continue;

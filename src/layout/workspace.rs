@@ -387,28 +387,30 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn advance_animations(&mut self) {
         self.scrolling.advance_animations();
         self.floating.advance_animations();
-        self.stage_manager_tick_auto_use_as_main();
+        self.stage_manager_tick();
     }
 
     pub fn are_animations_ongoing(&self) -> bool {
         self.scrolling.are_animations_ongoing()
             || self.floating.are_animations_ongoing()
-            || self.stage_manager_auto_use_as_main_timer_active()
+            || self.stage_manager_timer_active()
     }
 
-    fn stage_manager_tick_auto_use_as_main(&mut self) {
+    fn stage_manager_tick(&mut self) {
         let Some(config) = self.options.layout.stage_manager.clone() else {
             return;
         };
         let Some(mut state) = self.stage_manager.take() else {
             return;
         };
-        if super::stage_manager::tick_auto_use_as_main(
+        let mut changed = super::stage_manager::tick_auto_hide(self, &config, &mut state);
+        changed |= super::stage_manager::tick_auto_use_as_main(
             self,
             &config,
             &mut state,
             self.stage_manager_suppress_auto_use_as_main,
-        ) {
+        );
+        if changed {
             super::stage_manager::apply(self, &config, &mut state);
         }
         self.stage_manager = Some(state);
@@ -431,16 +433,15 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    fn stage_manager_auto_use_as_main_timer_active(&self) -> bool {
-        if self.stage_manager_suppress_auto_use_as_main {
-            return false;
-        }
+    fn stage_manager_timer_active(&self) -> bool {
         let Some(config) = self.options.layout.stage_manager.as_ref() else {
             return false;
         };
-        self.stage_manager
-            .as_ref()
-            .is_some_and(|state| state.auto_use_as_main_timer_active(config))
+        self.stage_manager.as_ref().is_some_and(|state| {
+            state.auto_hide_timer_active(config)
+                || (!self.stage_manager_suppress_auto_use_as_main
+                    && state.auto_use_as_main_timer_active(config))
+        })
     }
 
     pub fn are_transitions_ongoing(&self) -> bool {
@@ -2193,6 +2194,19 @@ impl<W: LayoutElement> Workspace<W> {
         }
 
         self.stage_manager_fix_z_order_for(&target);
+        if self
+            .options
+            .layout
+            .stage_manager
+            .as_ref()
+            .is_some_and(|config| config.auto_hide_stack)
+        {
+            if let Some(state) = &mut self.stage_manager {
+                if state.is_stage_window(&target) {
+                    state.hide_stack();
+                }
+            }
+        }
         self.apply_stage_manager_layout();
         self.floating_is_active = FloatingActive::Yes;
         true
@@ -2315,6 +2329,17 @@ impl<W: LayoutElement> Workspace<W> {
         };
 
         if stage_switch && activated {
+            if self
+                .options
+                .layout
+                .stage_manager
+                .as_ref()
+                .is_some_and(|config| config.auto_hide_stack)
+            {
+                if let Some(state) = &mut self.stage_manager {
+                    state.hide_stack();
+                }
+            }
             self.apply_stage_manager_layout();
             self.floating_is_active = FloatingActive::Yes;
         }
@@ -2357,6 +2382,20 @@ impl<W: LayoutElement> Workspace<W> {
         if activated {
             self.stage_manager_fix_z_order_for(&target);
 
+            let hid_stack = if self
+                .options
+                .layout
+                .stage_manager
+                .as_ref()
+                .is_some_and(|config| config.auto_hide_stack)
+            {
+                self.stage_manager.as_mut().is_some_and(|state| {
+                    state.is_stage_window(&target) && state.hide_stack()
+                })
+            } else {
+                false
+            };
+
             if self
                 .stage_manager
                 .as_ref()
@@ -2365,7 +2404,7 @@ impl<W: LayoutElement> Workspace<W> {
                 self.stage_manager_clear_interaction();
             }
 
-            if stage_switch {
+            if stage_switch || hid_stack {
                 self.apply_stage_manager_layout();
                 self.floating_is_active = FloatingActive::Yes;
             } else if self
@@ -2406,12 +2445,29 @@ impl<W: LayoutElement> Workspace<W> {
         if activated {
             self.stage_manager_fix_z_order_for(&target);
 
+            let hid_stack = if self
+                .options
+                .layout
+                .stage_manager
+                .as_ref()
+                .is_some_and(|config| config.auto_hide_stack)
+            {
+                self.stage_manager.as_mut().is_some_and(|state| {
+                    state.is_stage_window(&target) && state.hide_stack()
+                })
+            } else {
+                false
+            };
+
             if self
                 .stage_manager
                 .as_ref()
                 .is_some_and(|state| state.is_stage_window(&target))
             {
                 self.stage_manager_clear_interaction();
+            }
+            if hid_stack {
+                self.apply_stage_manager_layout();
             }
         }
 
@@ -2593,17 +2649,19 @@ impl<W: LayoutElement> Workspace<W> {
         let Some(config) = self.options.layout.stage_manager.clone() else {
             return false;
         };
-        let target = {
-            let Some(state) = self.stage_manager.as_ref() else {
-                return false;
-            };
-            let Some(id) =
-                super::stage_manager::try_focus_neighbor(self, state, &config, direction)
-            else {
-                return false;
-            };
-            state.resolve_activation_target(self, &id)
+        let Some(mut state) = self.stage_manager.take() else {
+            return false;
         };
+        let Some(id) = super::stage_manager::try_focus_neighbor(self, &state, &config, direction)
+        else {
+            self.stage_manager = Some(state);
+            return false;
+        };
+        if config.auto_hide_stack && state.is_cast_window(&id) {
+            state.reveal_stack();
+        }
+        let target = state.resolve_activation_target(self, &id);
+        self.stage_manager = Some(state);
         if let Some(state) = &mut self.stage_manager {
             state.on_cast_focused_passive(&target);
         }
@@ -2615,6 +2673,22 @@ impl<W: LayoutElement> Workspace<W> {
 
     fn stage_manager_follow_focus(&mut self) {
         if self.options.layout.stage_manager.is_some() && self.stage_manager.is_some() {
+            let active = self.active_window().map(|w| w.id().clone());
+            if let Some(state) = &mut self.stage_manager {
+                if self
+                    .options
+                    .layout
+                    .stage_manager
+                    .as_ref()
+                    .is_some_and(|config| config.auto_hide_stack)
+                {
+                    if active.as_ref().is_some_and(|id| state.is_cast_window(id)) {
+                        state.reveal_stack();
+                    } else if active.as_ref().is_some_and(|id| state.is_stage_window(id)) {
+                        state.hide_stack();
+                    }
+                }
+            }
             self.apply_stage_manager_layout();
         }
     }
@@ -2656,7 +2730,12 @@ impl<W: LayoutElement> Workspace<W> {
         let Some(config) = self.options.layout.stage_manager.clone() else {
             return false;
         };
-        if !super::stage_manager::pointer_in_stack_area(point, self.working_area(), &config) {
+        if !self
+            .stage_manager
+            .as_ref()
+            .is_some_and(|state| state.stack_visible(&config))
+            || !super::stage_manager::pointer_in_stack_area(point, self.working_area(), &config)
+        {
             return false;
         }
         let Some(mut state) = self.stage_manager.take() else {
@@ -2688,6 +2767,10 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn working_area(&self) -> Rectangle<f64, Logical> {
         self.working_area
+    }
+
+    pub(super) fn view_rect(&self) -> Rectangle<f64, Logical> {
+        Rectangle::from_size(self.view_size)
     }
 
     pub fn layout_config(&self) -> Option<&niri_config::LayoutPart> {

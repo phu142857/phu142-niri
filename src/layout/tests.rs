@@ -3224,6 +3224,33 @@ fn stage_manager_test_options() -> Options {
     }
 }
 
+fn stage_manager_auto_hide_test_options_at(stack_position: niri_config::StackPosition) -> Options {
+    let mut config = niri_config::StageManagerConfig::default();
+    config.proportion_horizontal = 0.5;
+    config.proportion_vertical = 0.5;
+    config.stack_position = stack_position;
+    config.auto_hide_stack = true;
+    Options {
+        layout: niri_config::Layout {
+            stage_manager: Some(config),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn stage_manager_auto_hide_test_options() -> Options {
+    stage_manager_auto_hide_test_options_at(niri_config::StackPosition::Left)
+}
+
+fn stage_manager_test_workspace(layout: &Layout<TestWindow>) -> &Workspace<TestWindow> {
+    layout
+        .workspaces()
+        .find(|(_, _, ws)| ws.has_window(&1))
+        .map(|(_, _, ws)| ws)
+        .unwrap()
+}
+
 #[test]
 fn stage_manager_dialog_overlays_parent_on_stage() {
     let ops = [
@@ -3308,6 +3335,181 @@ fn stage_manager_late_parent_dialog_joins_parent_on_stage() {
     assert!(!ws.is_stage_manager_strip_window(&1));
     assert!(!ws.is_stage_manager_strip_window(&2));
     assert_eq!(ws.active_window().map(LayoutElement::id), Some(&2));
+}
+
+#[test]
+fn stage_manager_auto_hide_reveals_and_dismisses_from_edge() {
+    let ops = [
+        Op::AddOutput(0),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+    ];
+    let mut layout = check_ops_with_options(stage_manager_auto_hide_test_options(), ops);
+
+    let ws = stage_manager_test_workspace(&layout);
+    let main = ws
+        .tiles_with_render_positions()
+        .find(|(tile, _, _)| tile.window().id() == &1)
+        .unwrap();
+    let main_size = main.0.tile_expected_or_current_size();
+    assert!((main.1.x - (1280. - main_size.w) / 2.).abs() <= 1.);
+    assert!((main.1.y - (720. - main_size.h) / 2.).abs() <= 1.);
+    assert!(ws
+        .tiles()
+        .find(|tile| tile.window().id() == &2)
+        .unwrap()
+        .is_stage_manager_strip_inert());
+
+    let ws = layout
+        .workspaces_mut()
+        .find(|ws| ws.has_window(&1))
+        .unwrap();
+    assert!(ws.stage_manager_pointer_motion(Point::from((0., 360.))));
+    check_ops_on_layout(
+        &mut layout,
+        [Op::AdvanceAnimations { msec_delta: 1999 }],
+    );
+    assert!(stage_manager_test_workspace(&layout)
+        .tiles()
+        .find(|tile| tile.window().id() == &2)
+        .unwrap()
+        .is_stage_manager_strip_inert());
+
+    check_ops_on_layout(&mut layout, [Op::AdvanceAnimations { msec_delta: 1 }]);
+    assert!(!stage_manager_test_workspace(&layout)
+        .tiles()
+        .find(|tile| tile.window().id() == &2)
+        .unwrap()
+        .is_stage_manager_strip_inert());
+
+    let ws = layout
+        .workspaces_mut()
+        .find(|ws| ws.has_window(&1))
+        .unwrap();
+    assert!(ws.stage_manager_pointer_motion(Point::from((1000., 360.))));
+    check_ops_on_layout(
+        &mut layout,
+        [Op::AdvanceAnimations { msec_delta: 1000 }],
+    );
+    assert!(stage_manager_test_workspace(&layout)
+        .tiles()
+        .find(|tile| tile.window().id() == &2)
+        .unwrap()
+        .is_stage_manager_strip_inert());
+}
+
+#[test]
+fn stage_manager_auto_hide_uses_configured_stack_edge() {
+    use niri_config::StackPosition;
+
+    let cases = [
+        (StackPosition::Left, Point::from((0., 360.))),
+        (StackPosition::Right, Point::from((1279., 360.))),
+        (StackPosition::Top, Point::from((640., 0.))),
+        (StackPosition::Bottom, Point::from((640., 719.))),
+    ];
+
+    for (position, edge_point) in cases {
+        let ops = [
+            Op::AddOutput(0),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+            Op::AddWindow {
+                params: TestWindowParams::new(2),
+            },
+        ];
+        let mut layout =
+            check_ops_with_options(stage_manager_auto_hide_test_options_at(position), ops);
+        let ws = layout
+            .workspaces_mut()
+            .find(|ws| ws.has_window(&1))
+            .unwrap();
+        assert!(ws.stage_manager_pointer_motion(edge_point));
+        check_ops_on_layout(&mut layout, [Op::AdvanceAnimations { msec_delta: 2000 }]);
+
+        let ws = stage_manager_test_workspace(&layout);
+        let main_pos = ws
+            .tiles_with_render_positions()
+            .find(|(tile, _, _)| tile.window().id() == &1)
+            .unwrap()
+            .1;
+        let cast = ws
+            .tiles_with_render_positions()
+            .find(|(tile, _, _)| tile.window().id() == &2)
+            .unwrap();
+        assert!(!cast.0.is_stage_manager_strip_inert());
+        match position {
+            StackPosition::Left => assert!(cast.1.x < main_pos.x),
+            StackPosition::Right => assert!(cast.1.x > main_pos.x),
+            StackPosition::Top => assert!(cast.1.y < main_pos.y),
+            StackPosition::Bottom => assert!(cast.1.y > main_pos.y),
+        }
+    }
+}
+
+#[test]
+fn stage_manager_auto_hide_reveal_zone_stays_on_output_edge_with_strut() {
+    let mut options = stage_manager_auto_hide_test_options();
+    options.layout.struts.left = FloatOrInt(32.);
+    let ops = [
+        Op::AddOutput(0),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+    ];
+    let mut layout = check_ops_with_options(options, ops);
+    let ws = layout
+        .workspaces_mut()
+        .find(|ws| ws.has_window(&1))
+        .unwrap();
+    assert!(ws.stage_manager_pointer_motion(Point::from((0., 360.))));
+    check_ops_on_layout(&mut layout, [Op::AdvanceAnimations { msec_delta: 2000 }]);
+    assert!(!stage_manager_test_workspace(&layout)
+        .tiles()
+        .find(|tile| tile.window().id() == &2)
+        .unwrap()
+        .is_stage_manager_strip_inert());
+}
+
+#[test]
+fn stage_manager_auto_hide_keyboard_reveals_and_returns_to_main() {
+    let ops = [
+        Op::AddOutput(0),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+    ];
+    let mut layout = check_ops_with_options(stage_manager_auto_hide_test_options(), ops);
+    let ws = layout
+        .workspaces_mut()
+        .find(|ws| ws.has_window(&1))
+        .unwrap();
+    assert!(ws.focus_left());
+    assert_eq!(ws.active_window().map(LayoutElement::id), Some(&2));
+    assert!(!ws
+        .tiles()
+        .find(|tile| tile.window().id() == &2)
+        .unwrap()
+        .is_stage_manager_strip_inert());
+
+    assert!(ws.focus_right());
+    assert_eq!(ws.active_window().map(LayoutElement::id), Some(&1));
+    assert!(ws
+        .tiles()
+        .find(|tile| tile.window().id() == &2)
+        .unwrap()
+        .is_stage_manager_strip_inert());
 }
 
 #[test]
