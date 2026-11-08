@@ -25,6 +25,7 @@ pub struct Layout {
     pub struts: Struts,
     pub background_color: Color,
     pub fullscreen_backdrop_color: Color,
+    pub stage_manager: Option<StageManagerConfig>,
 }
 
 impl Default for Layout {
@@ -54,6 +55,7 @@ impl Default for Layout {
             ],
             background_color: DEFAULT_BACKGROUND_COLOR,
             fullscreen_backdrop_color: Color::from_array_unpremul([0., 0., 0., 1.]),
+            stage_manager: None,
         }
     }
 }
@@ -94,6 +96,10 @@ impl MergeWith<LayoutPart> for Layout {
         if self.preset_window_heights.is_empty() {
             self.preset_window_heights = Layout::default().preset_window_heights;
         }
+
+        if let Some(part) = &part.stage_manager {
+            self.stage_manager = Some(StageManagerConfig::from_part(part));
+        }
     }
 }
 
@@ -131,6 +137,199 @@ pub struct LayoutPart {
     pub background_color: Option<Color>,
     #[knuffel(child)]
     pub fullscreen_backdrop_color: Option<Color>,
+    pub stage_manager: Option<StageManagerPart>,
+}
+
+/// Where the cast stack strip is placed relative to the stage.
+#[derive(knuffel::DecodeScalar, Debug, Default, PartialEq, Eq, Clone, Copy)]
+pub enum StackPosition {
+    /// Vertical cast strip on the left (default).
+    #[default]
+    Left,
+    /// Vertical cast strip on the right.
+    Right,
+    /// Horizontal cast strip at the top.
+    Top,
+    /// Horizontal cast strip at the bottom.
+    Bottom,
+}
+
+impl StackPosition {
+    pub fn is_vertical(self) -> bool {
+        matches!(self, Self::Left | Self::Right)
+    }
+}
+
+/// Reference resolution for stage-manager proportion values (1080p).
+pub const STAGE_MANAGER_REF_WIDTH: f64 = 1920.;
+pub const STAGE_MANAGER_REF_HEIGHT: f64 = 1080.;
+
+/// Stage Manager layout mode configuration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StageManagerConfig {
+    /// Where the cast stack strip is placed.
+    pub stack_position: StackPosition,
+    /// Main stage width as a fraction of [`STAGE_MANAGER_REF_WIDTH`] (0.1–1.0).
+    pub proportion_horizontal: f64,
+    /// Main stage height as a fraction of [`STAGE_MANAGER_REF_HEIGHT`] (0.1–1.0).
+    pub proportion_vertical: f64,
+    /// Maximum number of app groups visible in the cast strip (overflow goes hidden).
+    pub max_cast_groups: usize,
+    /// Cast thumbnail scale relative to the monitor (0.1–0.3).
+    pub thumb_scale: f64,
+    /// Group cast strip slots by app ID (macOS-style). When false, each window gets its own slot.
+    pub stack_by_app: bool,
+    /// After focusing a cast strip slot, promote it to main (keeps saved window size).
+    pub auto_use_as_main: bool,
+    /// Dwell time before auto-use-as-main triggers (milliseconds).
+    pub auto_use_as_main_delay_ms: u32,
+    /// Hide the cast strip until it is revealed from the configured screen edge.
+    pub auto_hide_stack: bool,
+    /// Pointer dwell time at the screen edge before revealing the cast strip.
+    pub auto_hide_reveal_delay_ms: u32,
+    /// Delay after the pointer leaves the cast strip before hiding it.
+    pub auto_hide_dismiss_delay_ms: u32,
+    /// Width in logical pixels of the edge reveal zone.
+    pub auto_hide_edge_width: f64,
+    /// Center the main stage in the full working area while the cast strip is hidden.
+    pub auto_hide_center_main: bool,
+}
+
+impl Default for StageManagerConfig {
+    fn default() -> Self {
+        Self {
+            stack_position: StackPosition::default(),
+            proportion_horizontal: 0.7,
+            proportion_vertical: 0.7,
+            max_cast_groups: 6,
+            thumb_scale: 0.15,
+            stack_by_app: false,
+            auto_use_as_main: false,
+            auto_use_as_main_delay_ms: 2000,
+            auto_hide_stack: false,
+            auto_hide_reveal_delay_ms: 2000,
+            auto_hide_dismiss_delay_ms: 1000,
+            auto_hide_edge_width: 4.,
+            auto_hide_center_main: true,
+        }
+    }
+}
+
+impl StageManagerConfig {
+    /// Target main-stage width in logical pixels (`proportion_horizontal` × 1920).
+    pub fn target_stage_width(&self) -> f64 {
+        self.proportion_horizontal * STAGE_MANAGER_REF_WIDTH
+    }
+
+    /// Target main-stage height in logical pixels (`proportion_vertical` × 1080).
+    pub fn target_stage_height(&self) -> f64 {
+        self.proportion_vertical * STAGE_MANAGER_REF_HEIGHT
+    }
+
+    fn from_part(part: &StageManagerPart) -> Self {
+        let default = Self::default();
+        let shared = part.proportion.map(|p| p.0);
+        let proportion_horizontal = part
+            .proportion_horizontal
+            .map(|p| p.0)
+            .or(shared)
+            .unwrap_or(default.proportion_horizontal);
+        let proportion_vertical = part
+            .proportion_vertical
+            .map(|p| p.0)
+            .or(shared)
+            .unwrap_or(default.proportion_vertical);
+        let max_cast_groups = part
+            .max_cast_groups
+            .map(|n| n.0 as usize)
+            .unwrap_or(Self::default().max_cast_groups);
+        let thumb_scale = part
+            .thumb_scale
+            .map(|p| p.0)
+            .unwrap_or(Self::default().thumb_scale);
+        let stack_by_app = part
+            .stack_by_app
+            .map(|f| f.0)
+            .unwrap_or(Self::default().stack_by_app);
+        let auto_use_as_main = part
+            .auto_use_as_main
+            .map(|f| f.0)
+            .unwrap_or(Self::default().auto_use_as_main);
+        let auto_use_as_main_delay_ms = part
+            .auto_use_as_main_delay_ms
+            .map(|n| n.0 as u32)
+            .unwrap_or(Self::default().auto_use_as_main_delay_ms);
+        let auto_hide_stack = part
+            .auto_hide_stack
+            .map(|f| f.0)
+            .unwrap_or(default.auto_hide_stack);
+        let auto_hide_reveal_delay_ms = part
+            .auto_hide_reveal_delay_ms
+            .map(|n| n.0 as u32)
+            .unwrap_or(default.auto_hide_reveal_delay_ms);
+        let auto_hide_dismiss_delay_ms = part
+            .auto_hide_dismiss_delay_ms
+            .map(|n| n.0 as u32)
+            .unwrap_or(default.auto_hide_dismiss_delay_ms);
+        let auto_hide_edge_width = part
+            .auto_hide_edge_width
+            .map(|n| n.0)
+            .unwrap_or(default.auto_hide_edge_width);
+        let auto_hide_center_main = part
+            .auto_hide_center_main
+            .map(|f| f.0)
+            .unwrap_or(default.auto_hide_center_main);
+        let stack_position = part
+            .stack_position
+            .unwrap_or(Self::default().stack_position);
+        Self {
+            stack_position,
+            proportion_horizontal: proportion_horizontal.clamp(0.1, 1.0),
+            proportion_vertical: proportion_vertical.clamp(0.1, 1.0),
+            max_cast_groups: max_cast_groups.clamp(1, 12),
+            thumb_scale: thumb_scale.clamp(0.1, 0.3),
+            stack_by_app,
+            auto_use_as_main,
+            auto_use_as_main_delay_ms: auto_use_as_main_delay_ms.clamp(0, 60_000),
+            auto_hide_stack,
+            auto_hide_reveal_delay_ms: auto_hide_reveal_delay_ms.clamp(0, 60_000),
+            auto_hide_dismiss_delay_ms: auto_hide_dismiss_delay_ms.clamp(0, 60_000),
+            auto_hide_edge_width: auto_hide_edge_width.clamp(1., 100.),
+            auto_hide_center_main,
+        }
+    }
+}
+
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
+pub struct StageManagerPart {
+    #[knuffel(child, unwrap(argument))]
+    pub stack_position: Option<StackPosition>,
+    #[knuffel(child, unwrap(argument))]
+    pub proportion: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child, unwrap(argument))]
+    pub proportion_horizontal: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child, unwrap(argument))]
+    pub proportion_vertical: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child, unwrap(argument))]
+    pub max_cast_groups: Option<FloatOrInt<1, 12>>,
+    #[knuffel(child, unwrap(argument))]
+    pub thumb_scale: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child)]
+    pub stack_by_app: Option<crate::utils::Flag>,
+    #[knuffel(child)]
+    pub auto_use_as_main: Option<crate::utils::Flag>,
+    #[knuffel(child, unwrap(argument))]
+    pub auto_use_as_main_delay_ms: Option<FloatOrInt<0, 60000>>,
+    #[knuffel(child)]
+    pub auto_hide_stack: Option<crate::utils::Flag>,
+    #[knuffel(child, unwrap(argument))]
+    pub auto_hide_reveal_delay_ms: Option<FloatOrInt<0, 60000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub auto_hide_dismiss_delay_ms: Option<FloatOrInt<0, 60000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub auto_hide_edge_width: Option<FloatOrInt<1, 100>>,
+    #[knuffel(child)]
+    pub auto_hide_center_main: Option<crate::utils::Flag>,
 }
 
 #[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]
@@ -198,6 +397,163 @@ where
             PresetSize::decode_node(child, ctx).map(Some).map(Self)
         } else {
             Ok(Self(None))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Config;
+
+    #[test]
+    fn stage_manager_parses() {
+        let config = Config::parse_mem(
+            r#"
+            layout {
+                stage-manager {
+                    proportion 0.7
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let sm = config.layout.stage_manager.unwrap();
+        assert!((sm.proportion_horizontal - 0.7).abs() < f64::EPSILON);
+        assert!((sm.proportion_vertical - 0.7).abs() < f64::EPSILON);
+        assert_eq!(sm.max_cast_groups, 6);
+        assert!((sm.thumb_scale - 0.15).abs() < f64::EPSILON);
+        assert!(!sm.stack_by_app);
+        assert!(!sm.auto_use_as_main);
+        assert_eq!(sm.auto_use_as_main_delay_ms, 2000);
+        assert!(!sm.auto_hide_stack);
+        assert_eq!(sm.auto_hide_reveal_delay_ms, 2000);
+        assert_eq!(sm.auto_hide_dismiss_delay_ms, 1000);
+        assert!((sm.auto_hide_edge_width - 4.).abs() < f64::EPSILON);
+        assert!(sm.auto_hide_center_main);
+    }
+
+    #[test]
+    fn stage_manager_auto_hide_parses() {
+        let config = Config::parse_mem(
+            r#"
+            layout {
+                stage-manager {
+                    auto-hide-stack true
+                    auto-hide-reveal-delay-ms 1500
+                    auto-hide-dismiss-delay-ms 750
+                    auto-hide-edge-width 8
+                    auto-hide-center-main false
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let sm = config.layout.stage_manager.unwrap();
+        assert!(sm.auto_hide_stack);
+        assert_eq!(sm.auto_hide_reveal_delay_ms, 1500);
+        assert_eq!(sm.auto_hide_dismiss_delay_ms, 750);
+        assert!((sm.auto_hide_edge_width - 8.).abs() < f64::EPSILON);
+        assert!(!sm.auto_hide_center_main);
+    }
+
+    #[test]
+    fn stage_manager_stack_by_app_parses() {
+        let config = Config::parse_mem(
+            r#"
+            layout {
+                stage-manager {
+                    stack-by-app true
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert!(config.layout.stage_manager.unwrap().stack_by_app);
+    }
+
+    #[test]
+    fn stage_manager_proportion_is_clamped() {
+        let config = Config::parse_mem(
+            r#"
+            layout {
+                stage-manager {
+                    proportion 0.05
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let sm = config.layout.stage_manager.unwrap();
+        assert!((sm.proportion_horizontal - 0.1).abs() < f64::EPSILON);
+        assert!((sm.proportion_vertical - 0.1).abs() < f64::EPSILON);
+
+        let config = Config::parse_mem(
+            r#"
+            layout {
+                stage-manager {
+                    proportion-horizontal 1.0
+                    proportion-vertical 1.0
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let sm = config.layout.stage_manager.unwrap();
+        assert!((sm.proportion_horizontal - 1.0).abs() < f64::EPSILON);
+        assert!((sm.proportion_vertical - 1.0).abs() < f64::EPSILON);
+        assert!((sm.target_stage_height() - 1080.).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn stage_manager_split_proportions_parse() {
+        let config = Config::parse_mem(
+            r#"
+            layout {
+                stage-manager {
+                    proportion-horizontal 0.8
+                    proportion-vertical 0.6
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let sm = config.layout.stage_manager.unwrap();
+        assert!((sm.proportion_horizontal - 0.8).abs() < f64::EPSILON);
+        assert!((sm.proportion_vertical - 0.6).abs() < f64::EPSILON);
+        assert!((sm.target_stage_width() - 1536.).abs() < f64::EPSILON);
+        assert!((sm.target_stage_height() - 648.).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn stage_manager_stack_position_parses() {
+        for (value, expected) in [
+            ("left", StackPosition::Left),
+            ("right", StackPosition::Right),
+            ("top", StackPosition::Top),
+            ("bottom", StackPosition::Bottom),
+        ] {
+            let config = Config::parse_mem(&format!(
+                r#"
+                layout {{
+                    stage-manager {{
+                        stack-position "{value}"
+                    }}
+                }}
+                "#
+            ))
+            .unwrap();
+
+            assert_eq!(
+                config.layout.stage_manager.unwrap().stack_position,
+                expected
+            );
         }
     }
 }

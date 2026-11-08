@@ -320,6 +320,21 @@ impl<W: LayoutElement> FloatingSpace<W> {
         })
     }
 
+    pub fn tiles_with_render_positions_rev(
+        &self,
+    ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> + '_ {
+        let scale = self.scale;
+        self.tiles
+            .iter()
+            .zip(self.data.iter())
+            .rev()
+            .map(move |(tile, data)| {
+                let pos = data.logical_pos + tile.render_offset();
+                let pos = pos.to_physical_precise_round(scale).to_logical(scale);
+                (tile, pos)
+            })
+    }
+
     pub fn tiles_with_render_positions_mut(
         &mut self,
         round: bool,
@@ -392,6 +407,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     fn contains(&self, id: &W::Id) -> bool {
         self.idx_of(id).is_some()
+    }
+
+    pub fn active_window_id(&self) -> Option<&W::Id> {
+        self.active_window_id.as_ref()
     }
 
     pub fn active_window(&self) -> Option<&W> {
@@ -513,19 +532,31 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     pub fn remove_tile(&mut self, id: &W::Id) -> RemovedTile<W> {
-        let idx = self.idx_of(id).unwrap();
-        self.remove_tile_by_idx(idx)
+        self.remove_tile_inner(id, false)
     }
 
-    fn remove_tile_by_idx(&mut self, idx: usize) -> RemovedTile<W> {
+    pub fn remove_tile_for_interactive_move(&mut self, id: &W::Id) -> RemovedTile<W> {
+        self.remove_tile_inner(id, true)
+    }
+
+    fn remove_tile_inner(&mut self, id: &W::Id, for_interactive_move: bool) -> RemovedTile<W> {
+        let idx = self.idx_of(id).unwrap();
+        self.remove_tile_by_idx(idx, for_interactive_move)
+    }
+
+    fn remove_tile_by_idx(&mut self, idx: usize, for_interactive_move: bool) -> RemovedTile<W> {
         let mut tile = self.tiles.remove(idx);
         let data = self.data.remove(idx);
 
         if self.tiles.is_empty() {
             self.active_window_id = None;
         } else if Some(tile.window().id()) == self.active_window_id.as_ref() {
-            // The active tile was removed, make the topmost tile active.
-            self.active_window_id = Some(self.tiles[0].window().id().clone());
+            if for_interactive_move {
+                self.active_window_id = None;
+            } else {
+                // The active tile was removed, make the topmost tile active.
+                self.active_window_id = Some(self.tiles[0].window().id().clone());
+            }
         }
 
         // Stop interactive resize.
@@ -569,6 +600,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let tile_size = tile.tile_size();
 
         self.start_close_animation_for_tile(renderer, snapshot, tile_size, tile_pos, blocker);
+    }
+
+    /// Clear the active window without picking a replacement.
+    ///
+    /// Used when the active tile is removed for an interactive move so focus does not jump to
+    /// another floating window (e.g. a stage-manager cast thumbnail).
+    pub fn clear_active_window(&mut self) {
+        self.active_window_id = None;
     }
 
     pub fn activate_window_without_raising(&mut self, id: &W::Id) -> bool {
@@ -845,28 +884,49 @@ impl<W: LayoutElement> FloatingSpace<W> {
         win.request_size_once(win_size, animate);
     }
 
+    fn find_directional(
+        &self,
+        active_id: &W::Id,
+        distance: impl Fn(Point<f64, Logical>, Point<f64, Logical>) -> f64,
+        allowed: Option<&[W::Id]>,
+    ) -> Option<W::Id> {
+        let active_idx = self.idx_of(active_id)?;
+        let center = self.data[active_idx].center();
+
+        zip(&self.tiles, &self.data)
+            .filter(|(tile, _)| {
+                let id = tile.window().id();
+                id != active_id
+                    && allowed
+                        .is_none_or(|allowed| allowed.iter().any(|allowed_id| allowed_id == id))
+            })
+            .map(|(tile, data)| (tile, distance(center, data.center())))
+            .filter(|(_, dist)| *dist > 0.)
+            .min_by(|(_, dist_a), (_, dist_b)| f64::total_cmp(dist_a, dist_b))
+            .map(|(tile, _)| tile.window().id().clone())
+    }
+
     fn focus_directional(
         &mut self,
         distance: impl Fn(Point<f64, Logical>, Point<f64, Logical>) -> f64,
     ) -> bool {
-        let Some(active_id) = &self.active_window_id else {
+        let Some(active_id) = self.active_window_id.clone() else {
             return false;
         };
-        let active_idx = self.idx_of(active_id).unwrap();
-        let center = self.data[active_idx].center();
+        let Some(id) = self.find_directional(&active_id, distance, None) else {
+            return false;
+        };
+        self.activate_window(&id);
+        true
+    }
 
-        let result = zip(&self.tiles, &self.data)
-            .filter(|(tile, _)| tile.window().id() != active_id)
-            .map(|(tile, data)| (tile, distance(center, data.center())))
-            .filter(|(_, dist)| *dist > 0.)
-            .min_by(|(_, dist_a), (_, dist_b)| f64::total_cmp(dist_a, dist_b));
-        if let Some((tile, _)) = result {
-            let id = tile.window().id().clone();
-            self.activate_window(&id);
-            true
-        } else {
-            false
-        }
+    pub fn find_directional_among(
+        &self,
+        active_id: &W::Id,
+        allowed: &[W::Id],
+        distance: impl Fn(Point<f64, Logical>, Point<f64, Logical>) -> f64,
+    ) -> Option<W::Id> {
+        self.find_directional(active_id, distance, Some(allowed))
     }
 
     pub fn focus_left(&mut self) -> bool {
@@ -931,6 +991,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
         } else {
             self.data[idx].set_logical_pos(new_pos);
         }
+
+        let id = self.tiles[idx].window().id().clone();
+        self.mark_user_position(&id);
 
         self.interactive_resize_end(None);
     }
@@ -1101,6 +1164,269 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 push(elem.into())
             });
         }
+    }
+
+    pub fn set_tile_position(&mut self, id: &W::Id, logical_pos: Point<f64, Logical>) -> bool {
+        let Some(idx) = self.idx_of(id) else {
+            return false;
+        };
+        self.data[idx].set_logical_pos(logical_pos);
+        true
+    }
+
+    /// Whether the user has manually positioned this floating tile.
+    pub fn has_user_position(&self, id: &W::Id) -> bool {
+        let Some(idx) = self.idx_of(id) else {
+            return false;
+        };
+        self.tiles[idx].floating_pos.is_some()
+            || self.tiles[idx].interactive_move_offset != Point::from((0., 0.))
+    }
+
+    pub fn mark_user_position(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        let pos = self.data[idx].logical_pos;
+        let frac = self.logical_to_size_frac(pos);
+        self.tiles[idx].floating_pos = Some(frac);
+        self.tiles[idx].set_stage_manager_saved_pos(Some(frac));
+    }
+
+    /// Save the current main-stage position and clear manual placement so cast layout can run.
+    ///
+    /// When [save_pos] is false (e.g. demoted from parallel layout), position is not remembered.
+    pub fn park_stage_position_for_cast(&mut self, id: &W::Id, save_pos: bool) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        if save_pos {
+            let frac = self.logical_to_size_frac(self.data[idx].logical_pos);
+            self.tiles[idx].set_stage_manager_saved_pos(Some(frac));
+        } else {
+            self.tiles[idx].set_stage_manager_saved_pos(None);
+        }
+        self.tiles[idx].set_stage_manager_saved_size(None);
+        self.tiles[idx].floating_pos = None;
+        self.tiles[idx].interactive_move_offset = Point::from((0., 0.));
+        self.tiles[idx].stop_move_animations();
+        self.interactive_resize_end(Some(id));
+        self.clear_stage_manager_thumb(id);
+        self.data[idx].update(&self.tiles[idx]);
+    }
+
+    /// Clear remembered layout so the next stage-manager apply uses config defaults.
+    pub fn clear_stage_manager_default_layout(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        self.tiles[idx].set_stage_manager_saved_size(None);
+        self.tiles[idx].set_stage_manager_saved_pos(None);
+        self.tiles[idx].floating_pos = None;
+        self.tiles[idx].interactive_move_offset = Point::from((0., 0.));
+        self.tiles[idx].stop_move_animations();
+        self.interactive_resize_end(Some(id));
+        self.clear_stage_manager_thumb(id);
+        self.data[idx].update(&self.tiles[idx]);
+    }
+
+    /// Restore a previously saved main-stage position after promotion from the cast strip.
+    pub fn restore_stage_saved_position(&mut self, id: &W::Id) -> bool {
+        let Some(idx) = self.idx_of(id) else {
+            return false;
+        };
+        let Some(frac) = self.tiles[idx].stage_manager_saved_pos() else {
+            return false;
+        };
+        self.tiles[idx].floating_pos = Some(frac);
+        self.clear_stage_manager_thumb(id);
+        let logical = self.scale_by_working_area(frac);
+        self.data[idx].set_logical_pos(logical);
+        self.data[idx].update(&self.tiles[idx]);
+        true
+    }
+
+    pub fn clear_user_position(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        self.tiles[idx].floating_pos = None;
+    }
+
+    /// Position a strip thumbnail and draw it at [tile_size] via downscaling, without resizing the
+    /// client.
+    pub fn set_stage_manager_strip_geometry(
+        &mut self,
+        id: &W::Id,
+        tile_size: Size<i32, Logical>,
+        pos: Point<f64, Logical>,
+        _animate: bool,
+    ) -> bool {
+        let Some(idx) = self.idx_of(id) else {
+            return false;
+        };
+        let thumb = tile_size.to_f64();
+        self.tiles[idx].set_stage_manager_thumb(Some(thumb));
+
+        self.data[idx].set_logical_pos(pos);
+        self.data[idx].size = thumb;
+        true
+    }
+
+    pub fn clear_stage_manager_thumb(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        self.tiles[idx].set_stage_manager_thumb(None);
+        self.tiles[idx].set_stage_manager_strip_inert(false);
+        self.data[idx].update(&self.tiles[idx]);
+    }
+
+    /// Center a stage dialog over its parent without changing either window's size.
+    pub fn center_stage_dialog_on_parent(&mut self, dialog: &W::Id, parent: &W::Id) -> bool {
+        let Some(dialog_idx) = self.idx_of(dialog) else {
+            return false;
+        };
+        let Some(parent_idx) = self.idx_of(parent) else {
+            return false;
+        };
+
+        self.clear_stage_manager_thumb(dialog);
+
+        let parent_pos = self.data[parent_idx].logical_pos;
+        let parent_size = self.tiles[parent_idx].tile_expected_or_current_size();
+        let dialog_size = self.tiles[dialog_idx].tile_expected_or_current_size();
+        let pos = parent_pos + (parent_size.to_point() - dialog_size.to_point()).downscale(2.);
+        let pos = self.clamp_within_working_area(pos, dialog_size);
+        self.data[dialog_idx].set_logical_pos(pos);
+        true
+    }
+
+    /// Park a cast sibling off-screen so it does not render or receive clicks.
+    pub fn set_stage_manager_strip_inert(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        self.tiles[idx].set_stage_manager_strip_inert(true);
+
+        let pos = Point::from((
+            self.working_area.loc.x + self.working_area.size.w,
+            self.working_area.loc.y + self.working_area.size.h,
+        ));
+        self.data[idx].update(&self.tiles[idx]);
+        self.data[idx].set_logical_pos(pos);
+    }
+
+    pub fn stage_window_size(&self, id: &W::Id) -> Option<Size<i32, Logical>> {
+        let idx = self.idx_of(id)?;
+        let tile = &self.tiles[idx];
+        tile.window()
+            .expected_size()
+            .or_else(|| Some(tile.window().size()))
+    }
+
+    pub fn stage_manager_saved_size(&self, id: &W::Id) -> Option<Size<i32, Logical>> {
+        let idx = self.idx_of(id)?;
+        self.tiles[idx].stage_manager_saved_size()
+    }
+
+    pub fn stage_manager_saved_pos(&self, id: &W::Id) -> Option<Point<f64, SizeFrac>> {
+        let idx = self.idx_of(id)?;
+        self.tiles[idx].stage_manager_saved_pos()
+    }
+
+    pub fn set_stage_manager_saved_size(&mut self, id: &W::Id, size: Size<i32, Logical>) {
+        let idx = self.idx_of(id).unwrap();
+        self.tiles[idx].set_stage_manager_saved_size(Some(size));
+    }
+
+    /// Remember the first main-stage layout applied to this window.
+    pub fn snapshot_stage_manager_initial_if_needed(
+        &mut self,
+        id: &W::Id,
+        size: Size<i32, Logical>,
+        pos: Point<f64, Logical>,
+    ) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        if self.tiles[idx].stage_manager_initial_size().is_some() {
+            return;
+        }
+        let frac = self.logical_to_size_frac(pos);
+        self.tiles[idx].set_stage_manager_initial_size(Some(size));
+        self.tiles[idx].set_stage_manager_initial_pos(Some(frac));
+    }
+
+    pub fn restore_stage_manager_initial_layout(&mut self, id: &W::Id) -> bool {
+        let Some(idx) = self.idx_of(id) else {
+            return false;
+        };
+        let Some(size) = self.tiles[idx].stage_manager_initial_size() else {
+            return false;
+        };
+        let Some(frac) = self.tiles[idx].stage_manager_initial_pos() else {
+            return false;
+        };
+
+        self.clear_stage_manager_main_layout_state(id);
+        self.tiles[idx].set_stage_manager_saved_size(Some(size));
+        self.tiles[idx].set_stage_manager_saved_pos(Some(frac));
+        self.data[idx].update(&self.tiles[idx]);
+        true
+    }
+
+    /// Clear manual placement and restore remembered layout, or clear it for config defaults.
+    pub fn reset_stage_manager_main_layout(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        let initial_size = self.tiles[idx].stage_manager_initial_size();
+        let initial_pos = self.tiles[idx].stage_manager_initial_pos();
+
+        self.clear_stage_manager_main_layout_state(id);
+
+        if let (Some(size), Some(frac)) = (initial_size, initial_pos) {
+            self.tiles[idx].set_stage_manager_saved_size(Some(size));
+            self.tiles[idx].set_stage_manager_saved_pos(Some(frac));
+        } else {
+            self.tiles[idx].set_stage_manager_saved_size(None);
+            self.tiles[idx].set_stage_manager_saved_pos(None);
+        }
+
+        self.data[idx].update(&self.tiles[idx]);
+    }
+
+    fn clear_stage_manager_main_layout_state(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        self.tiles[idx].floating_pos = None;
+        self.tiles[idx].interactive_move_offset = Point::from((0., 0.));
+        self.tiles[idx].stop_move_animations();
+        self.interactive_resize_end(Some(id));
+        self.clear_stage_manager_thumb(id);
+    }
+
+    pub fn raise_to_top(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        if idx < self.tiles.len() - 1 {
+            let tile = self.tiles.remove(idx);
+            let data = self.data.remove(idx);
+            self.tiles.push(tile);
+            self.data.push(data);
+        }
+    }
+
+    /// Raise a window and its descendants while preserving parent/child stacking constraints.
+    pub fn raise_with_descendants_to_top(&mut self, id: &W::Id) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        self.raise_window(idx, 0);
+        self.bring_up_descendants_of(0);
     }
 
     pub fn interactive_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {

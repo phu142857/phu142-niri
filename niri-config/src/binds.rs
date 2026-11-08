@@ -517,6 +517,20 @@ pub enum Action {
     ToggleOverview,
     OpenOverview,
     CloseOverview,
+    /// Stage Manager: promote focused app to main, or demote back to cast strip.
+    StageManagerToggleMain,
+    /// Stage Manager: show focused cast app in parallel on stage.
+    StageManagerPromoteParallel,
+    /// Stage Manager: reset main-stage layout to initial or config defaults.
+    StageManagerResetMainLayout,
+    /// Toggle full-screen viewport zoom (magnifier).
+    ToggleViewportZoom,
+    /// Toggle built-in keyboard pointer mode (warpd-like).
+    ToggleKeyboardPointer,
+    /// Increase viewport zoom scale (while zoom is active).
+    ViewportZoomIn,
+    /// Decrease viewport zoom scale (while zoom is active).
+    ViewportZoomOut,
     #[knuffel(skip)]
     ToggleWindowUrgent(u64),
     #[knuffel(skip)]

@@ -13,6 +13,7 @@ pub mod frame_clock;
 pub mod handlers;
 pub mod input;
 pub mod ipc;
+pub mod keyboard_pointer;
 pub mod layer;
 pub mod layout;
 pub mod niri;
@@ -23,6 +24,7 @@ pub mod rubber_band;
 pub mod screencasting;
 pub mod ui;
 pub mod utils;
+pub mod viewport_zoom;
 pub mod window;
 
 #[cfg(test)]

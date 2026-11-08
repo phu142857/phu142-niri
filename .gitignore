@@ -2,3 +2,48 @@
 /result
 
 .idea
+
+# === AI / Agent / IDE tooling (local, per-machine) ===
+
+# Cursor
+.cursor/
+.cursorignore
+.cursorrules
+
+# Claude / Anthropic
+.claude/
+CLAUDE.md
+
+# Agents
+.agents/
+AGENTS.md
+AGENT.md
+AGENT/
+agent/
+agents/
+
+# Skills
+.skills/
+skills/
+
+# Local AI tools
+.tools/
+.ai/
+ai/
+
+# MCP (Model Context Protocol)
+.mcp/
+mcp/
+mcp.json
+**/mcp.json
+
+# CodeGraph (local index/cache)
+.codegraph/
+codegraph.db
+codegraph.db-*
+
+# Other AI assistants
+.aider/
+.continue/
+.windsurf/
+.copilot/

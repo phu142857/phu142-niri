@@ -1,98 +1,72 @@
-<h1 align="center"><img alt="niri" src="https://github.com/user-attachments/assets/07d05cd0-d5dc-4a28-9a35-51bae8f119a0"></h1>
-<p align="center">A scrollable-tiling Wayland compositor.</p>
-<p align="center">
-    <a href="https://matrix.to/#/#niri:matrix.org"><img alt="Matrix" src="https://img.shields.io/badge/matrix-%23niri-blue?logo=matrix"></a>
-    <a href="https://github.com/niri-wm/niri/blob/main/LICENSE"><img alt="GitHub License" src="https://img.shields.io/github/license/niri-wm/niri"></a>
-    <a href="https://github.com/niri-wm/niri/releases"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/niri-wm/niri?logo=github"></a>
-</p>
+# phu142-niri
 
-<p align="center">
-    <a href="https://niri-wm.github.io/niri/Getting-Started.html">Getting Started</a> | <a href="https://niri-wm.github.io/niri/Configuration%3A-Introduction.html">Configuration</a> | <a href="https://github.com/niri-wm/niri/discussions/325">Setup&nbsp;Showcase</a>
-</p>
+Fork của [niri](https://github.com/niri-wm/niri) — compositor Wayland scrollable-tiling — với thêm **Stage Manager** (kiểu macOS Stage Manager).
 
-<img width="1280" height="720" alt="niri with a few windows open" src="https://github.com/user-attachments/assets/dea5909e-1859-4aaa-9d88-d37f9663e00b" />
+- **Fork này:** [https://github.com/phu142857/phu142-niri](https://github.com/phu142857/phu142-niri)
+- **Niri gốc:** [https://github.com/niri-wm/niri](https://github.com/niri-wm/niri)
+- **Tài liệu niri gốc:** [https://niri-wm.github.io/niri/](https://niri-wm.github.io/niri/)
 
-## About
+Mọi tính năng của niri gốc vẫn giữ nguyên. Phần dưới chỉ mô tả thêm Stage Manager, cách backup, cài đặt và cấu hình cho fork này.
 
-Windows are arranged in columns on an infinite strip going to the right.
-Opening a new window never causes existing windows to resize.
+---
 
-Every monitor has its own separate window strip.
-Windows can never "overflow" onto an adjacent monitor.
+## Stage Manager là gì?
 
-Workspaces are dynamic and arranged vertically.
-Every monitor has an independent set of workspaces, and there's always one empty workspace present all the way down.
+Stage Manager chia màn hình thành hai vùng:
 
-The workspace arrangement is preserved across disconnecting and connecting monitors where it makes sense.
-When a monitor disconnects, its workspaces will move to another monitor, but upon reconnection they will move back to the original monitor.
 
-## Features
+| Vùng             | Mô tả                                                                     |
+| ---------------- | ------------------------------------------------------------------------- |
+| **Main (stage)** | Ứng dụng chính; kích thước theo `proportion-horizontal` × 1920 và `proportion-vertical` × 1080 |
+| **Cast strip**   | Các app khác hiển thị thumbnail trên cạnh màn hình (`stack-position`); click để đưa lên main      |
 
-- Built from the ground up for scrollable tiling
-- [Dynamic workspaces](https://niri-wm.github.io/niri/Workspaces.html) like in GNOME
-- An [Overview](https://github.com/user-attachments/assets/379a5d1f-acdb-4c11-b36c-e85fd91f0995) that zooms out workspaces and windows
-- Built-in screenshot UI
-- Monitor and window screencasting through xdg-desktop-portal-gnome
-    - You can [block out](https://niri-wm.github.io/niri/Configuration%3A-Window-Rules.html#block-out-from) sensitive windows from screencasts
-    - [Dynamic cast target](https://niri-wm.github.io/niri/Screencasting.html#dynamic-screencast-target) that can change what it shows on the go
-- [Touchpad](https://github.com/niri-wm/niri/assets/1794388/946a910e-9bec-4cd1-a923-4a9421707515) and [mouse](https://github.com/niri-wm/niri/assets/1794388/8464e65d-4bf2-44fa-8c8e-5883355bd000) gestures
-- Group windows into [tabs](https://niri-wm.github.io/niri/Tabs.html)
-- Configurable layout: gaps, borders, struts, window sizes
-- [Gradient borders](https://niri-wm.github.io/niri/Configuration%3A-Layout.html#gradients) with Oklab and Oklch support
-- [Background blur](https://niri-wm.github.io/niri/Window-Effects.html) for windows and layer-shell surfaces
-- [Animations](https://github.com/niri-wm/niri/assets/1794388/ce178da2-af9e-4c51-876f-8709c241d95e) with support for [custom shaders](https://github.com/niri-wm/niri/assets/1794388/27a238d6-0a22-4692-b794-30dc7a626fad)
-- Live-reloading config
-- Works with [screen readers](https://niri-wm.github.io/niri/Accessibility.html)
 
-## Video Demo
+---
 
-https://github.com/niri-wm/niri/assets/1794388/bce834b0-f205-434e-a027-b373495f9729
+## Backup trước khi cài
 
-Also check out these videos that showcase a lot of the niri functionality:
+Trước khi thay binary niri, nên sao lưu binary cũ và config:
 
-- [Niri Is My New Favorite Wayland Compositor](https://www.youtube.com/watch?v=DeYx2exm04M) by Brodie Robertson
-- [How Is niri This Good? Live Demo + Config](https://www.youtube.com/watch?v=7XmD5UyyhZQ) by Nick Janetakis
+```bash
+# Tạo thư mục backup (có thể đổi ngày tùy ý)
+mkdir -p ~/niri-backup-$(date +%Y%m%d)
 
-## Status
+# Backup binary niri đang dùng (đường dẫn phổ biến)
+sudo cp -a "$(command -v niri)" ~/niri-backup-$(date +%Y%m%d)/niri 2>/dev/null \
+  || echo "Không tìm thấy niri trong PATH"
 
-Niri is stable for day-to-day use and does most things expected of a Wayland compositor.
-Many people are daily-driving niri, and are happy to help in our [Matrix channel].
+# Backup config
+cp -a ~/.config/niri ~/niri-backup-$(date +%Y%m%d)/config-niri
 
-Give it a try!
-Follow the instructions on the [Getting Started](https://niri-wm.github.io/niri/Getting-Started.html) page.
-Grab a desktop shell like [DankMaterialShell] or [Noctalia] (or build a more traditional setup): niri by itself is not a complete desktop environment.
-Also check out [awesome-niri], a list of niri-related links and projects.
+# (Tuỳ chọn) Backup session / unit systemd user
+cp -a ~/.config/systemd/user/niri.service ~/niri-backup-$(date +%Y%m%d)/ 2>/dev/null || true
+```
 
-Here are some points you may have questions about:
+**Khôi phục niri gốc sau này:**
 
-- **Multi-monitor**: yes, a core part of the design from the very start. Mixed DPI works.
-- **Fractional scaling**: yes, plus all niri UI stays pixel-perfect.
-- **NVIDIA**: seems to work fine.
-- **Floating windows**: yes, starting from niri 25.01.
-- **Input devices**: niri supports tablets, touchpads, and touchscreens.
-You can map the tablet to a specific monitor, or use [OpenTabletDriver].
-We have touchpad gestures, but no touchscreen gestures yet.
-- **Wlr protocols**: yes, we have most of the important ones like layer-shell, gamma-control, screencopy.
-You can check on [wayland.app](https://wayland.app) at the bottom of each protocol's page.
-- **Performance**: while I run niri on beefy machines, I try to stay conscious of performance.
-I've seen someone use it fine on an Eee PC 900 from 2008, of all things.
-- **Xwayland**: [integrated](https://niri-wm.github.io/niri/Xwayland.html#using-xwayland-satellite) via xwayland-satellite starting from niri 25.08.
+```bash
+sudo install -m 755 ~/niri-backup-YYYYMMDD/niri /usr/local/bin/niri
+# hoặc copy lại vào đúng path package manager đã cài (vd. /usr/bin/niri)
+cp -a ~/niri-backup-YYYYMMDD/config-niri ~/.config/niri
+```
 
-## Media
+---
 
-[niri: Making a Wayland compositor in Rust](https://youtu.be/Kmz8ODolnDg?list=PLRdS-n5seLRqrmWDQY4KDqtRMfIwU0U3T) · *December 2024*
+## Cài đặt
 
-My talk from the 2024 Moscow RustCon about niri, and how I do randomized property testing and profiling, and measure input latency.
-The talk is in Russian, but I prepared full English subtitles that you can find in YouTube's subtitle language selector.
+### Yêu cầu build
 
-[An interview with Ivan, the developer behind Niri](https://www.trommelspeicher.de/podcast/special_the_developer_behind_niri) · *June 2025*
+- Rust ≥ 1.85 (`rustup` khuyến nghị)
+- Thư viện hệ thống giống [hướng dẫn build niri gốc](https://niri-wm.github.io/niri/Getting-Started.html#building)
 
-An interview by a German tech podcast Das Triumvirat (in English).
-We talk about niri development and history, and my experience building and maintaining niri.
+**Arch / CachyOS** (ví dụ):
 
-[A tour of the niri scrolling-tiling Wayland compositor](https://lwn.net/Articles/1025866/) · *July 2025*
+```bash
+sudo pacman -S --needed base-devel clang systemd-libs libgbm libxkbcommon \
+  mesa libwayland libinput dbus seatd pipewire pango libdisplay-info
+```
 
-An LWN article with a nice overview and introduction to niri.
+Tên package có thể khác một chút giữa các distro; xem mục Building trong wiki niri gốc nếu `cargo build` báo thiếu thư viện.
 
 [How to test a Wayland compositor?](https://youtu.be/w44fYK5z418?list=PLK4NE4dSsLlw) · *October 2026*
 
@@ -100,43 +74,136 @@ My talk about some testing techniques used in niri: property-based tests, snapsh
 The first half overlaps with my RustCon talk, the second half is new.
 The talk is in Russian, but I prepared full English subtitles that you can find in YouTube's subtitle language selector.
 
-## Contributing
+## Build fork này
 
-If you'd like to help with niri, there are plenty of both coding- and non-coding-related ways to do so.
-See [CONTRIBUTING.md](https://github.com/niri-wm/niri/blob/main/CONTRIBUTING.md) for an overview.
+### Build và cài binary
 
-## Inspiration
+```bash
+git clone https://github.com/phu142857/phu142-niri.git
+cd phu142-niri
+cargo build --release
+sudo install -m 755 target/release/niri /usr/local/bin/niri
+```
 
-Niri is heavily inspired by [PaperWM] which implements scrollable tiling on top of GNOME Shell.
+Kiểm tra:
 
-One of the reasons that prompted me to try writing my own compositor is being able to properly separate the monitors.
-Being a GNOME Shell extension, PaperWM has to work against Shell's global window coordinate space to prevent windows from overflowing.
+```bash
+niri --version
+which niri
+```
 
-## Tile Scrollably Elsewhere
+### Chạy session
 
-Here are some other projects which implement a similar workflow:
+Giống niri gốc:
 
-- [PaperWM]: scrollable tiling on top of GNOME Shell.
-- [karousel]: scrollable tiling on top of KDE.
-- [scroll](https://github.com/dawsers/scroll) and [papersway]: scrollable tiling on top of sway/i3.
-- Hyprland has a built-in [scrolling layout](https://wiki.hypr.land/Configuring/Layouts/Scrolling-Layout/).
-- [Paneru] and [PaperWM.spoon]: scrollable tiling on top of macOS.
+- Từ display manager: chọn **Niri** khi đăng nhập.
+- Từ TTY: `niri-session` hoặc `niri --session`.
 
-## Contact
+Fork **không** thay thế toàn bộ desktop environment — vẫn cần bar, launcher, portal, v.v. như khi dùng niri gốc.
 
-Our main communication channel is a Matrix chat, feel free to join and ask a question: https://matrix.to/#/#niri:matrix.org
+---
 
-We also have a community Discord server: https://discord.gg/vT8Sfjy7sx
+## Cấu hình Stage Manager
 
-[PaperWM]: https://github.com/paperwm/PaperWM
-[waybar]: https://github.com/Alexays/Waybar
-[fuzzel]: https://codeberg.org/dnkl/fuzzel
-[awesome-niri]: https://github.com/niri-wm/awesome-niri
-[karousel]: https://github.com/peterfajdiga/karousel
-[papersway]: https://spwhitton.name/tech/code/papersway/
-[Paneru]: https://github.com/karinushka/paneru
-[PaperWM.spoon]: https://github.com/mogenson/PaperWM.spoon
-[Matrix channel]: https://matrix.to/#/#niri:matrix.org
-[OpenTabletDriver]: https://opentabletdriver.net/
-[DankMaterialShell]: https://danklinux.com/
-[Noctalia]: https://noctalia.dev/
+Config niri nằm tại `~/.config/niri/config.kdl` (định dạng [KDL](https://kdl.dev)).
+
+### Bật Stage Manager
+
+Thêm block `stage-manager` trong `layout { }`:
+
+```kdl
+layout {
+    center-focused-column "never"
+
+    stage-manager {
+        proportion-horizontal 0.825
+        proportion-vertical 0.92
+        stack-position "left"
+        max-cast-groups 2
+        thumb-scale 0.19
+
+        auto-use-as-main true
+        auto-use-as-main-delay-ms 0
+
+        auto-hide-stack true
+        auto-hide-reveal-delay-ms 2000
+        auto-hide-dismiss-delay-ms 1000
+        auto-hide-edge-width 4
+        auto-hide-center-main true
+    }
+}
+```
+
+| Tuỳ chọn | Giá trị ví dụ | Ý nghĩa |
+| -------- | ------------- | ------- |
+| `proportion-horizontal` | `0.825` | Chiều rộng main = 0.825 × **1920** → **1584 px** |
+| `proportion-vertical` | `0.92` | Chiều cao main = 0.92 × **1080** → **994 px** |
+| `stack-position` | `"left"` | Cast strip bên trái (`right`, `top`, `bottom`) |
+| `max-cast-groups` | `2` | Tối đa 2 nhóm thumbnail trên strip |
+| `thumb-scale` | `0.19` | Kích thước thumbnail (0.1 – 0.3) |
+| `auto-use-as-main` | `true` | Focus thumbnail (bàn phím) → tự lên main |
+| `auto-use-as-main-delay-ms` | `0` | Không chờ; lên main ngay khi focus stack |
+| `auto-hide-stack` | `true` | Ẩn cast strip khi không sử dụng |
+| `auto-hide-reveal-delay-ms` | `2000` | Giữ chuột ở cạnh màn hình 2 giây để hiện strip |
+| `auto-hide-dismiss-delay-ms` | `1000` | Ẩn strip sau khi chuột rời strip 1 giây |
+| `auto-hide-edge-width` | `4` | Độ rộng vùng kích hoạt sát cạnh, tính bằng logical pixel |
+| `auto-hide-center-main` | `true` | Khi strip ẩn, căn giữa main trong toàn working area theo kích thước đã lưu |
+
+`proportion` (cũ) vẫn dùng được — gán cả ngang và dọc cùng một giá trị nếu không ghi riêng.
+
+Nếu **không** có block `stage-manager`, compositor chạy layout niri gốc (không có cast strip).
+
+### Phím tắt Stage Manager
+
+Thêm vào `binds { }` (đã có sẵn trong `resources/default-config.kdl`):
+
+```kdl
+binds {
+    // Cần bật layout.stage-manager ở trên
+    Mod+G { stage-manager-toggle-main; }
+    Mod+Shift+G { stage-manager-promote-parallel; }
+}
+```
+
+
+| Phím          | Tác dụng                                                      |
+| ------------- | ------------------------------------------------------------- |
+| `Mod+G`       | Đổi focus giữa app trên main và app đang chọn trên cast strip |
+| `Mod+Shift+G` | Đưa app từ stack lên main song song (tối đa 2 app trên main)  |
+
+
+`Mod` mặc định là phím **Super** (Windows) khi chạy trên TTY.
+
+### Tương tác chuột
+
+- **Click thumbnail** trên cast strip → app đó lên main, thay app main hiện tại.
+- **Kéo thumbnail** lên vùng main → cùng hiệu ứng thay thế / merge tùy vị trí thả.
+- **`auto-use-as-main true`**: focus thumbnail trên stack (bàn phím) → app tự lên main sau `auto-use-as-main-delay-ms` (`0` = ngay lập tức). Giữ kích thước đã resize thủ công. Hover chuột không kích hoạt.
+- **`auto-hide-stack true`**: giữ chuột ở cạnh `stack-position` đủ thời gian hoặc nhấn phím điều hướng về phía cạnh đó để hiện stack. Chọn main hoặc rời stack đủ lâu sẽ ẩn lại.
+
+Config reload live: sửa `config.kdl` và lưu — niri tự nạp lại (trừ vài thay đổi cần restart session).
+
+---
+
+## Gỡ / quay lại niri gốc
+
+1. Khôi phục binary từ thư mục backup (mục [Backup](#backup-trước-khi-cài)).
+2. Trong `config.kdl`, xóa hoặc comment block `stage-manager { }` và các bind `stage-manager-`* nếu không dùng trên bản gốc.
+3. Đăng xuất và đăng nhập lại session.
+
+---
+
+## Phát triển
+
+```bash
+cargo build
+cargo test -p niri-config stage_manager
+```
+
+Stage Manager: `src/layout/stage_manager.rs`, tích hợp workspace tại `src/layout/workspace.rs`.
+
+---
+
+## Giấy phép
+
+Giữ nguyên **GPL-3.0-or-later** như [niri gốc](https://github.com/niri-wm/niri/blob/main/LICENSE).

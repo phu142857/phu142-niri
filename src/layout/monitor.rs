@@ -1684,6 +1684,7 @@ impl<W: LayoutElement> Monitor<W> {
         &self,
         mut ctx: RenderCtx<R>,
         focus_ring: bool,
+        viewport: crate::viewport_zoom::ViewportZoomState,
         push: &mut dyn FnMut(MonitorRenderElement<R>),
     ) {
         let _span = tracy_client::span!("Monitor::render_workspaces");
@@ -1699,12 +1700,14 @@ impl<W: LayoutElement> Monitor<W> {
             .filter(|_| !self.options.layout.insert_hint.off);
 
         let scale_relocate = move |geo: Rectangle<f64, Logical>, elem| {
-            let elem = RescaleRenderElement::from_element(elem, Point::from((0, 0)), zoom);
+            let geo = viewport.transform_geo(geo);
+            let elem = RescaleRenderElement::from_element(
+                elem,
+                Point::from((0, 0)),
+                viewport.multiply_zoom(zoom),
+            );
             RelocateRenderElement::from_element(
                 elem,
-                // The offset we get from workspaces_with_render_geo() is already
-                // rounded to physical pixels, but it's in the logical coordinate
-                // space, so we need to convert it to physical.
                 geo.loc.to_physical_precise_round(scale),
                 Relocate::Relative,
             )

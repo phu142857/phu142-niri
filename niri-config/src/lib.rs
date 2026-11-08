@@ -83,6 +83,8 @@ pub struct Config {
     pub blur: Blur,
     pub gestures: Gestures,
     pub overview: Overview,
+    pub viewport_zoom: ViewportZoom,
+    pub keyboard_pointer: KeyboardPointer,
     pub environment: Environment,
     pub xwayland_satellite: XwaylandSatellite,
     pub window_rules: Vec<WindowRule>,
@@ -204,6 +206,8 @@ where
                 "blur" => m_merge!(blur),
                 "gestures" => m_merge!(gestures),
                 "overview" => m_merge!(overview),
+                "viewport-zoom" => m_merge!(viewport_zoom),
+                "keyboard-pointer" => m_merge!(keyboard_pointer),
                 "xwayland-satellite" => m_merge!(xwayland_satellite),
                 "switch-events" => m_merge!(switch_events),
                 "debug" => m_merge!(debug),
@@ -644,6 +648,26 @@ mod tests {
         let config = Config::parse_mem("").unwrap();
         assert_eq!(config.input.keyboard.repeat_delay, 600);
         assert_eq!(config.input.keyboard.repeat_rate, 25);
+    }
+
+    #[test]
+    fn viewport_zoom_edge_pan_options_parse() {
+        let config = Config::parse_mem(
+            r#"
+            viewport-zoom {
+                edge-pan
+                edge-margin 64
+                edge-pan-speed 720
+                zoom-filter "nearest"
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert!(config.viewport_zoom.edge_pan);
+        assert_eq!(config.viewport_zoom.edge_margin, 64.);
+        assert_eq!(config.viewport_zoom.edge_pan_speed, 720.);
+        assert_eq!(config.viewport_zoom.zoom_filter, ZoomFilter::Nearest);
     }
 
     #[track_caller]

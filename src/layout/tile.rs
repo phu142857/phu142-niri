@@ -4,6 +4,9 @@ use std::rc::Rc;
 use niri_config::utils::MergeWith as _;
 use niri_config::{Color, CornerRadius, GradientInterpolation};
 use niri_ipc::WindowLayout;
+use smithay::backend::renderer::element::utils::{
+    Relocate, RelocateRenderElement, RescaleRenderElement,
+};
 use smithay::backend::renderer::element::{Element, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
@@ -118,6 +121,34 @@ pub struct Tile<W: LayoutElement> {
 
     /// Configurable properties of the layout.
     pub(super) options: Rc<Options>,
+
+    /// Fixed visual size for Stage Manager strip thumbnails.
+    ///
+    /// When set, the tile is drawn at this size while the client keeps its real size. Contents are
+    /// rendered at full size, clipped, then rescaled into the thumb (macOS-style live preview).
+    stage_manager_thumb: Option<Size<f64, Logical>>,
+
+    /// Remembered stage size for Stage Manager (survives strip ↔ stage moves).
+    stage_manager_saved_size: Option<Size<i32, Logical>>,
+
+    /// Remembered stage position for Stage Manager (survives strip ↔ stage moves).
+    stage_manager_saved_pos: Option<Point<f64, SizeFrac>>,
+
+    /// Layout when the window was first placed on the main stage (for reset).
+    stage_manager_initial_size: Option<Size<i32, Logical>>,
+    stage_manager_initial_pos: Option<Point<f64, SizeFrac>>,
+
+    /// Parked off-screen: not rendered and not hit-tested (cast group siblings).
+    stage_manager_strip_inert: bool,
+}
+
+niri_render_elements! {
+    StageManagerThumbRenderElement<R> => {
+        LayoutElement = LayoutElementRenderElement<R>,
+        ClippedSurface = ClippedSurfaceRenderElement<R>,
+        Border = BorderRenderElement,
+        SolidColor = SolidColorRenderElement,
+    }
 }
 
 niri_render_elements! {
@@ -133,6 +164,8 @@ niri_render_elements! {
         Offscreen = OffscreenRenderElement,
         ExtraDamage = ExtraDamage,
         BackgroundEffect = BackgroundEffectElement,
+        StageManagerThumb =
+            RelocateRenderElement<RescaleRenderElement<StageManagerThumbRenderElement<R>>>,
     }
 }
 
@@ -217,7 +250,63 @@ impl<W: LayoutElement> Tile<W> {
             scale,
             clock,
             options,
+            stage_manager_thumb: None,
+            stage_manager_saved_size: None,
+            stage_manager_saved_pos: None,
+            stage_manager_initial_size: None,
+            stage_manager_initial_pos: None,
+            stage_manager_strip_inert: false,
         }
+    }
+
+    pub fn set_stage_manager_thumb(&mut self, size: Option<Size<f64, Logical>>) {
+        self.stage_manager_thumb = size;
+        if size.is_some() {
+            self.stage_manager_strip_inert = false;
+        }
+    }
+
+    pub fn set_stage_manager_strip_inert(&mut self, inert: bool) {
+        self.stage_manager_strip_inert = inert;
+        if inert {
+            self.stage_manager_thumb = None;
+        }
+    }
+
+    pub fn is_stage_manager_strip_inert(&self) -> bool {
+        self.stage_manager_strip_inert
+    }
+
+    pub fn set_stage_manager_saved_size(&mut self, size: Option<Size<i32, Logical>>) {
+        self.stage_manager_saved_size = size;
+    }
+
+    pub fn stage_manager_saved_size(&self) -> Option<Size<i32, Logical>> {
+        self.stage_manager_saved_size
+    }
+
+    pub fn set_stage_manager_saved_pos(&mut self, pos: Option<Point<f64, SizeFrac>>) {
+        self.stage_manager_saved_pos = pos;
+    }
+
+    pub fn stage_manager_saved_pos(&self) -> Option<Point<f64, SizeFrac>> {
+        self.stage_manager_saved_pos
+    }
+
+    pub fn set_stage_manager_initial_size(&mut self, size: Option<Size<i32, Logical>>) {
+        self.stage_manager_initial_size = size;
+    }
+
+    pub fn stage_manager_initial_size(&self) -> Option<Size<i32, Logical>> {
+        self.stage_manager_initial_size
+    }
+
+    pub fn set_stage_manager_initial_pos(&mut self, pos: Option<Point<f64, SizeFrac>>) {
+        self.stage_manager_initial_pos = pos;
+    }
+
+    pub fn stage_manager_initial_pos(&self) -> Option<Point<f64, SizeFrac>> {
+        self.stage_manager_initial_pos
     }
 
     pub fn update_config(
@@ -542,14 +631,18 @@ impl<W: LayoutElement> Tile<W> {
         } else {
             false
         };
-        let radius = radius.expanded_by(self.focus_ring.width() as f32);
+        let mut focus_radius = radius.expanded_by(self.focus_ring.width() as f32);
+        if self.stage_manager_thumb.is_some() {
+            focus_radius =
+                focus_radius.fit_to(animated_tile_size.w as f32, animated_tile_size.h as f32);
+        }
         self.focus_ring.update_render_elements(
             animated_tile_size,
             is_active,
             !draw_focus_ring_with_background,
             self.window.is_urgent(),
             view_rect,
-            radius,
+            focus_radius,
             self.scale,
             1. - expanded_progress as f32,
         );
@@ -805,6 +898,10 @@ impl<W: LayoutElement> Tile<W> {
     }
 
     pub fn tile_size(&self) -> Size<f64, Logical> {
+        if let Some(thumb) = self.stage_manager_thumb {
+            return thumb;
+        }
+
         let mut size = self.window_size();
 
         if self.sizing_mode.is_fullscreen() {
@@ -877,6 +974,10 @@ impl<W: LayoutElement> Tile<W> {
     }
 
     pub fn animated_tile_size(&self) -> Size<f64, Logical> {
+        if self.stage_manager_thumb.is_some() {
+            return self.tile_size();
+        }
+
         let mut size = self.tile_size();
 
         if let Some(resize) = &self.resize_animation {
@@ -924,8 +1025,22 @@ impl<W: LayoutElement> Tile<W> {
     }
 
     pub fn hit(&self, point: Point<f64, Logical>) -> Option<HitType> {
+        if self.stage_manager_strip_inert {
+            return None;
+        }
+
         let offset = self.bob_offset();
         let point = point - offset;
+
+        if self.stage_manager_thumb.is_some() {
+            let thumb_region = Rectangle::from_size(self.tile_size());
+            if thumb_region.contains(point) {
+                return Some(HitType::Activate {
+                    is_tab_indicator: false,
+                });
+            }
+            return None;
+        }
 
         if self.is_in_input_region(point) {
             let win_pos = self.buf_loc() + offset;
@@ -1073,6 +1188,10 @@ impl<W: LayoutElement> Tile<W> {
     ) {
         let _span = tracy_client::span!("Tile::render_inner");
 
+        if self.stage_manager_strip_inert {
+            return;
+        }
+
         let scale = Scale::from(self.scale);
         let fullscreen_progress = self.fullscreen_progress();
         let expanded_progress = self.expanded_progress();
@@ -1103,7 +1222,7 @@ impl<W: LayoutElement> Tile<W> {
         let window_size = self.window_size();
         let animated_window_size = self.animated_window_size();
         let window_render_loc = location + window_loc;
-        let area = Rectangle::new(window_render_loc, animated_window_size);
+        let mut area = Rectangle::new(window_render_loc, animated_window_size);
         xray_pos = xray_pos.offset(window_loc);
 
         let rules = self.window.rules();
@@ -1111,20 +1230,26 @@ impl<W: LayoutElement> Tile<W> {
         // Clip to geometry including during the fullscreen animation to help with buggy clients
         // that submit a full-sized buffer before acking the fullscreen state (Firefox).
         let clip_to_geometry = fullscreen_progress < 1. && rules.clip_to_geometry == Some(true);
+
+        if let Some(thumb) = self.stage_manager_thumb {
+            area = Rectangle::new(location, thumb);
+        }
         let radius = self
             .window
             .geometry_corner_radius()
             .scaled_by(1. - expanded_progress as f32);
 
         // Popups go on top, whether it's resize or not.
-        self.window.render_popups(
-            ctx.r(),
-            window_render_loc,
-            scale,
-            win_alpha,
-            xray_pos,
-            &mut |elem| push(elem.into()),
-        );
+        if self.stage_manager_thumb.is_none() {
+            self.window.render_popups(
+                ctx.r(),
+                window_render_loc,
+                scale,
+                win_alpha,
+                xray_pos,
+                &mut |elem| push(elem.into()),
+            );
+        }
 
         // If we're resizing, try to render a shader, or a fallback.
         let mut pushed_resize = false;
@@ -1208,76 +1333,194 @@ impl<W: LayoutElement> Tile<W> {
         // If we're not resizing, render the window itself.
         let has_border_shader = BorderRenderElement::has_shader(ctx.renderer);
         if !pushed_resize {
-            let geo = Rectangle::new(window_render_loc, window_size);
-            let radius = radius.fit_to(window_size.w as f32, window_size.h as f32);
+            if let Some(thumb) = self.stage_manager_thumb {
+                let border_offset = self
+                    .effective_border_width()
+                    .map(|width| Point::from((width, width)))
+                    .unwrap_or_else(|| Point::from((0., 0.)));
+                let inner_size: Size<f64, Logical> = {
+                    let mut s = Size::from((
+                        thumb.w - border_offset.x * 2.,
+                        thumb.h - border_offset.y * 2.,
+                    ));
+                    s.w = f64::max(s.w, 1.);
+                    s.h = f64::max(s.h, 1.);
+                    s
+                };
+                let source_geo = Rectangle::from_size(window_size);
+                let fit_scale = f64::min(
+                    inner_size.w / f64::max(window_size.w, 1.),
+                    inner_size.h / f64::max(window_size.h, 1.),
+                );
+                let thumb_scale = Scale::from((fit_scale, fit_scale));
+                let scaled_win = window_size.upscale(fit_scale);
+                let preview_loc = location
+                    + border_offset
+                    + Point::from((
+                        (inner_size.w - scaled_win.w) / 2.,
+                        (inner_size.h - scaled_win.h) / 2.,
+                    ));
+                let thumb_radius = radius.fit_to(scaled_win.w as f32, scaled_win.h as f32);
+                let thumb_clip_to_geometry = rules.clip_to_geometry == Some(true);
 
-            let clip_shader = ClippedSurfaceRenderElement::shader(ctx.renderer).cloned();
-            let clip = |elem| match elem {
-                LayoutElementRenderElement::Wayland(elem) => {
-                    // If we should clip to geometry, render a clipped window.
-                    if clip_to_geometry {
-                        if let Some(shader) = clip_shader.clone() {
-                            if ClippedSurfaceRenderElement::will_clip(&elem, scale, geo, radius) {
-                                return ClippedSurfaceRenderElement::new(
-                                    elem,
+                let clip_shader = ClippedSurfaceRenderElement::shader(ctx.renderer).cloned();
+                let thumb_clip = |elem| match elem {
+                    LayoutElementRenderElement::Wayland(elem) => {
+                        if thumb_clip_to_geometry {
+                            if let Some(shader) = clip_shader.clone() {
+                                if ClippedSurfaceRenderElement::will_clip(
+                                    &elem,
                                     scale,
-                                    geo,
-                                    shader.clone(),
-                                    radius,
-                                )
-                                .into();
+                                    source_geo,
+                                    thumb_radius,
+                                ) {
+                                    return StageManagerThumbRenderElement::ClippedSurface(
+                                        ClippedSurfaceRenderElement::new(
+                                            elem,
+                                            scale,
+                                            source_geo,
+                                            shader,
+                                            thumb_radius,
+                                        ),
+                                    );
+                                }
                             }
                         }
-                    }
 
-                    // Otherwise, render it normally.
-                    LayoutElementRenderElement::Wayland(elem).into()
-                }
-                LayoutElementRenderElement::SolidColor(elem) => {
-                    // In this branch we're rendering a blocked-out window with a solid
-                    // color. We need to render it with a rounded corner shader even if
-                    // clip_to_geometry is false, because in this case we're assuming that
-                    // the unclipped window CSD already has corners rounded to the
-                    // user-provided radius, so our blocked-out rendering should match that
-                    // radius.
-                    if radius != CornerRadius::default() && has_border_shader {
-                        return BorderRenderElement::new(
-                            geo.size,
-                            Rectangle::from_size(geo.size),
-                            GradientInterpolation::default(),
-                            Color::from_color32f(elem.color()),
-                            Color::from_color32f(elem.color()),
-                            0.,
-                            Rectangle::from_size(geo.size),
-                            0.,
-                            radius,
-                            scale.x as f32,
-                            1.,
+                        StageManagerThumbRenderElement::LayoutElement(
+                            LayoutElementRenderElement::Wayland(elem),
                         )
-                        .with_location(geo.loc)
-                        .into();
                     }
+                    LayoutElementRenderElement::SolidColor(elem) => {
+                        if thumb_radius != CornerRadius::default() && has_border_shader {
+                            return StageManagerThumbRenderElement::Border(
+                                BorderRenderElement::new(
+                                    source_geo.size,
+                                    Rectangle::from_size(source_geo.size),
+                                    GradientInterpolation::default(),
+                                    Color::from_color32f(elem.color()),
+                                    Color::from_color32f(elem.color()),
+                                    0.,
+                                    Rectangle::from_size(source_geo.size),
+                                    0.,
+                                    thumb_radius,
+                                    scale.x as f32,
+                                    1.,
+                                ),
+                            );
+                        }
 
-                    // Otherwise, render the solid color as is.
-                    LayoutElementRenderElement::SolidColor(elem).into()
-                }
-                elem @ LayoutElementRenderElement::BackgroundEffect(_) => {
-                    // This is only used on popups for now. If subsurface blur is implemented, this
-                    // will need to be handled somehow.
-                    error!("background effect clipping is unimplemented");
-                    elem.into()
-                }
-            };
+                        StageManagerThumbRenderElement::SolidColor(elem)
+                    }
+                    LayoutElementRenderElement::BackgroundEffect(_) => {
+                        error!("background effect clipping is unimplemented");
+                        StageManagerThumbRenderElement::LayoutElement(elem)
+                    }
+                };
 
-            if clip_to_geometry && clip_shader.is_some() {
-                let damage = self.rounded_corner_damage.render(geo);
-                push(damage.into());
+                if thumb_clip_to_geometry && clip_shader.is_some() {
+                    let damage = self
+                        .rounded_corner_damage
+                        .render(Rectangle::new(location, thumb));
+                    push(damage.into());
+                }
+
+                self.window.render_normal(
+                    ctx.r(),
+                    Point::from((0., 0.)),
+                    scale,
+                    win_alpha,
+                    &mut |elem| {
+                        let elem = thumb_clip(elem);
+                        let elem = RescaleRenderElement::from_element(
+                            elem,
+                            Point::from((0, 0)),
+                            thumb_scale,
+                        );
+                        let elem = RelocateRenderElement::from_element(
+                            elem,
+                            preview_loc.to_physical_precise_round(scale),
+                            Relocate::Relative,
+                        );
+                        push(TileRenderElement::StageManagerThumb(elem));
+                    },
+                );
+            } else {
+                let geo = Rectangle::new(window_render_loc, window_size);
+                let radius = radius.fit_to(geo.size.w as f32, geo.size.h as f32);
+
+                let clip_shader = ClippedSurfaceRenderElement::shader(ctx.renderer).cloned();
+                let clip = |elem| match elem {
+                    LayoutElementRenderElement::Wayland(elem) => {
+                        // If we should clip to geometry, render a clipped window.
+                        if clip_to_geometry {
+                            if let Some(shader) = clip_shader.clone() {
+                                if ClippedSurfaceRenderElement::will_clip(&elem, scale, geo, radius)
+                                {
+                                    return ClippedSurfaceRenderElement::new(
+                                        elem,
+                                        scale,
+                                        geo,
+                                        shader.clone(),
+                                        radius,
+                                    )
+                                    .into();
+                                }
+                            }
+                        }
+
+                        // Otherwise, render it normally.
+                        LayoutElementRenderElement::Wayland(elem).into()
+                    }
+                    LayoutElementRenderElement::SolidColor(elem) => {
+                        // In this branch we're rendering a blocked-out window with a solid
+                        // color. We need to render it with a rounded corner shader even if
+                        // clip_to_geometry is false, because in this case we're assuming that
+                        // the unclipped window CSD already has corners rounded to the
+                        // user-provided radius, so our blocked-out rendering should match that
+                        // radius.
+                        if radius != CornerRadius::default() && has_border_shader {
+                            return BorderRenderElement::new(
+                                geo.size,
+                                Rectangle::from_size(geo.size),
+                                GradientInterpolation::default(),
+                                Color::from_color32f(elem.color()),
+                                Color::from_color32f(elem.color()),
+                                0.,
+                                Rectangle::from_size(geo.size),
+                                0.,
+                                radius,
+                                scale.x as f32,
+                                1.,
+                            )
+                            .with_location(geo.loc)
+                            .into();
+                        }
+
+                        // Otherwise, render the solid color as is.
+                        LayoutElementRenderElement::SolidColor(elem).into()
+                    }
+                    elem @ LayoutElementRenderElement::BackgroundEffect(_) => {
+                        // This is only used on popups for now. If subsurface blur is implemented, this
+                        // will need to be handled somehow.
+                        error!("background effect clipping is unimplemented");
+                        elem.into()
+                    }
+                };
+
+                if clip_to_geometry && clip_shader.is_some() {
+                    let damage = self.rounded_corner_damage.render(geo);
+                    push(damage.into());
+                }
+
+                self.window.render_normal(
+                    ctx.r(),
+                    window_render_loc,
+                    scale,
+                    win_alpha,
+                    &mut |elem| push(clip(elem)),
+                );
             }
-
-            self.window
-                .render_normal(ctx.r(), window_render_loc, scale, win_alpha, &mut |elem| {
-                    push(clip(elem))
-                });
         }
 
         if fullscreen_progress > 0. {
@@ -1338,22 +1581,24 @@ impl<W: LayoutElement> Tile<W> {
                 .render(ctx.renderer, location, &mut |elem| push(elem.into()));
         }
 
-        if expanded_progress < 1. {
+        if expanded_progress < 1. && self.stage_manager_thumb.is_none() {
             self.shadow
                 .render(ctx.renderer, location, &mut |elem| push(elem.into()));
         }
 
-        let surface_anim_scale = animated_window_size / window_size;
-        self.window.render_background_effect(
-            ctx.as_gles(),
-            area,
-            self.scale,
-            clip_to_geometry,
-            surface_anim_scale,
-            radius,
-            xray_pos,
-            &mut |elem| push(elem.into()),
-        );
+        if self.stage_manager_thumb.is_none() {
+            let surface_anim_scale = animated_window_size / window_size;
+            self.window.render_background_effect(
+                ctx.as_gles(),
+                area,
+                self.scale,
+                clip_to_geometry,
+                surface_anim_scale,
+                radius,
+                xray_pos,
+                &mut |elem| push(elem.into()),
+            );
+        }
     }
 
     pub fn render<R: NiriRenderer>(

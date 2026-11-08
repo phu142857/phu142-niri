@@ -389,6 +389,7 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             ctx.event_loop.insert_idle(move |state| {
                 // Make sure some logic like workspace clean-up has a chance to run before doing
                 // actions.
+                state.sync_stage_manager_auto_use_suppress();
                 state.niri.advance_animations();
                 // This action didn't come from an input, so just use the current time.
                 let time = InputTime::now();

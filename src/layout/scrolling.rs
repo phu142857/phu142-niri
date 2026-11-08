@@ -2715,6 +2715,21 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         cancel_resize_for_column(&mut self.interactive_resize, col);
     }
 
+    pub fn contains_window(&self, window: &W::Id) -> bool {
+        self.columns.iter().any(|col| col.contains(window))
+    }
+
+    pub fn set_view_offset_for_stage_manager(&mut self, offset: f64) {
+        self.view_offset.stop_anim_and_gesture();
+        self.view_offset = ViewOffset::Static(offset);
+    }
+
+    pub fn set_strip_column_width(&mut self, width: i32) {
+        if let Some(col) = self.columns.first_mut() {
+            col.set_column_width(SizeChange::SetFixed(width), None, true);
+        }
+    }
+
     pub fn set_window_height(&mut self, window: Option<&W::Id>, change: SizeChange) {
         if self.columns.is_empty() {
             return;

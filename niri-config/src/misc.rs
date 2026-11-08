@@ -152,6 +152,167 @@ impl MergeWith<OverviewPart> for Overview {
     }
 }
 
+/// Keyboard-driven pointer control (built-in warpd-like normal mode).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeyboardPointer {
+    /// Initial speed in logical pixels per second.
+    pub speed: f64,
+    pub max_speed: f64,
+    pub acceleration: f64,
+    /// Scroll speed in logical pixels per second.
+    pub scroll_speed: f64,
+}
+
+impl Default for KeyboardPointer {
+    fn default() -> Self {
+        Self {
+            speed: 350.,
+            max_speed: 1200.,
+            acceleration: 1400.,
+            scroll_speed: 400.,
+        }
+    }
+}
+
+#[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]
+pub struct KeyboardPointerPart {
+    #[knuffel(child, unwrap(argument))]
+    pub speed: Option<FloatOrInt<1, 10000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub max_speed: Option<FloatOrInt<1, 10000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub acceleration: Option<FloatOrInt<0, 100000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub scroll_speed: Option<FloatOrInt<1, 10000>>,
+}
+
+impl MergeWith<KeyboardPointerPart> for KeyboardPointer {
+    fn merge_with(&mut self, part: &KeyboardPointerPart) {
+        if let Some(v) = part.speed.filter(|v| v.0 > 0.) {
+            self.speed = v.0;
+        }
+        if let Some(v) = part.max_speed.filter(|v| v.0 > 0.) {
+            self.max_speed = v.0;
+        }
+        if let Some(v) = part.acceleration {
+            self.acceleration = v.0;
+        }
+        if let Some(v) = part.scroll_speed.filter(|v| v.0 > 0.) {
+            self.scroll_speed = v.0;
+        }
+        if self.max_speed < self.speed {
+            self.max_speed = self.speed;
+        }
+    }
+}
+
+/// Full-screen viewport zoom (magnifier) settings.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewportZoom {
+    /// Scale applied when toggling zoom on.
+    pub default_scale: f64,
+    pub min_scale: f64,
+    pub max_scale: f64,
+    /// Keyboard +/- step.
+    pub step: f64,
+    /// Scroll wheel step (with Mod held while zoom is active).
+    pub wheel_step: f64,
+    /// When true, lock the magnified frame in place and pan only at the screen edges
+    /// (macOS Magnifier-style).
+    pub edge_pan: bool,
+    /// Width of the screen-edge pan zone in logical pixels.
+    pub edge_margin: f64,
+    /// Maximum edge-pan speed in screen logical pixels per second.
+    pub edge_pan_speed: f64,
+    /// Texture filter used when magnifying the viewport.
+    pub zoom_filter: ZoomFilter,
+}
+
+impl Default for ViewportZoom {
+    fn default() -> Self {
+        Self {
+            default_scale: 1.5,
+            min_scale: 1.0,
+            max_scale: 64.0,
+            step: 0.1,
+            wheel_step: 0.05,
+            edge_pan: false,
+            edge_margin: 96.0,
+            edge_pan_speed: 900.0,
+            zoom_filter: ZoomFilter::Linear,
+        }
+    }
+}
+
+#[derive(knuffel::DecodeScalar, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ZoomFilter {
+    #[default]
+    Linear,
+    Nearest,
+}
+
+#[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]
+pub struct ViewportZoomPart {
+    #[knuffel(child, unwrap(argument))]
+    pub default_scale: Option<FloatOrInt<1, 64>>,
+    #[knuffel(child, unwrap(argument))]
+    pub min_scale: Option<FloatOrInt<1, 64>>,
+    #[knuffel(child, unwrap(argument))]
+    pub max_scale: Option<FloatOrInt<1, 64>>,
+    #[knuffel(child, unwrap(argument))]
+    pub step: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child, unwrap(argument))]
+    pub wheel_step: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child)]
+    pub edge_pan: Option<Flag>,
+    #[knuffel(child, unwrap(argument))]
+    pub edge_margin: Option<FloatOrInt<0, 4096>>,
+    #[knuffel(child, unwrap(argument))]
+    pub edge_pan_speed: Option<FloatOrInt<1, 10000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub zoom_filter: Option<ZoomFilter>,
+    /// Ignored (removed).
+    #[knuffel(child, unwrap(argument))]
+    pub dead_zone_width: Option<FloatOrInt<0, 4096>>,
+    /// Ignored (removed).
+    #[knuffel(child, unwrap(argument))]
+    pub dead_zone_height: Option<FloatOrInt<0, 4096>>,
+}
+
+impl MergeWith<ViewportZoomPart> for ViewportZoom {
+    fn merge_with(&mut self, part: &ViewportZoomPart) {
+        // Ignore 0.0 from failed parses (knuffel emits an error and substitutes default).
+        if let Some(v) = part.default_scale.filter(|v| v.0 > 0.) {
+            self.default_scale = v.0;
+        }
+        if let Some(v) = part.min_scale.filter(|v| v.0 > 0.) {
+            self.min_scale = v.0;
+        }
+        if let Some(v) = part.max_scale.filter(|v| v.0 > 0.) {
+            self.max_scale = v.0;
+        }
+        if let Some(v) = part.step.filter(|v| v.0 > 0.) {
+            self.step = v.0;
+        }
+        if let Some(v) = part.wheel_step.filter(|v| v.0 > 0.) {
+            self.wheel_step = v.0;
+        }
+        merge!((self, part), edge_pan);
+        if let Some(v) = part.edge_margin {
+            self.edge_margin = v.0;
+        }
+        if let Some(v) = part.edge_pan_speed.filter(|v| v.0 > 0.) {
+            self.edge_pan_speed = v.0;
+        }
+        if let Some(v) = part.zoom_filter {
+            self.zoom_filter = v;
+        }
+        self.min_scale = self.min_scale.clamp(1.0, 64.0);
+        self.max_scale = self.max_scale.clamp(self.min_scale, 64.0);
+        self.default_scale = self.default_scale.clamp(self.min_scale, self.max_scale);
+    }
+}
+
 #[derive(knuffel::Decode, Debug, Default, Clone, PartialEq, Eq)]
 pub struct Environment(#[knuffel(children)] pub Vec<EnvironmentVariable>);
 

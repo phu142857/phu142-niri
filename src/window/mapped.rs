@@ -1011,6 +1011,12 @@ impl LayoutElement for Mapped {
         });
     }
 
+    fn stage_manager_stack_key(&self) -> Option<String> {
+        with_toplevel_role(self.toplevel(), |role| {
+            role.app_id.clone().or_else(|| role.title.clone())
+        })
+    }
+
     fn configure_intent(&self) -> ConfigureIntent {
         let _span =
             trace_span!("configure_intent", surface = ?self.toplevel().wl_surface().id()).entered();

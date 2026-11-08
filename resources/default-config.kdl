@@ -70,6 +70,27 @@ input {
     // focus-follows-mouse max-scroll-amount="0%"
 }
 
+// Full-screen viewport zoom (magnifier with realtime mouse panning).
+// Toggle with Mod+Shift+Z. While active: Mod+scroll to adjust scale;
+// Mod+Equal/Mod+Minus temporarily override set-column-width binds.
+// edge-pan: lock frame in place; pan only when pushing the cursor to a screen edge
+// (macOS Magnifier-style). Default off — omit the line or use `edge-pan false`.
+viewport-zoom {
+    default-scale 1.5
+    min-scale 1.0
+    max-scale 64.0
+    step 0.1
+    wheel-step 0.05
+    // edge-pan
+}
+
+keyboard-pointer {
+    speed 350
+    max-speed 1200
+    acceleration 1400
+    scroll-speed 400
+}
+
 // You can configure outputs by their name, which you can find
 // by running `niri msg outputs` while inside a niri instance.
 // The built-in laptop monitor is usually called "eDP-1".
@@ -416,6 +437,16 @@ binds {
     //     press   { spawn "notify-send" "Enable push-to-talk!"; }
     //     release { spawn "notify-send" "Disable push-to-talk!"; }
     // }
+
+    // Stage Manager (requires `stage-manager { }` in layout).
+    Mod+G { stage-manager-toggle-main; }
+    Mod+Shift+G { stage-manager-promote-parallel; }
+    Mod+C { stage-manager-reset-main-layout; }
+
+    // Full-screen viewport zoom (magnifier with mouse panning).
+    // While active: Mod+scroll to adjust scale; Mod+Equal/Mod+Minus override column-width binds.
+    Mod+Shift+Z { toggle-viewport-zoom; }
+    Mod+Alt+Return { toggle-keyboard-pointer; }
 
     Mod+Q repeat=false { close-window; }
     Alt+F4 repeat=false { close-window; }

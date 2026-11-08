@@ -83,6 +83,7 @@ pub mod monitor;
 pub mod opening_window;
 pub mod scrolling;
 pub mod shadow;
+pub mod stage_manager;
 pub mod tab_indicator;
 pub mod tile;
 pub mod workspace;
@@ -245,6 +246,11 @@ pub trait LayoutElement {
     fn is_ignoring_opacity_window_rule(&self) -> bool;
 
     fn is_urgent(&self) -> bool;
+
+    /// Grouping key for Stage Manager stacks (e.g. app ID).
+    fn stage_manager_stack_key(&self) -> Option<String> {
+        None
+    }
 
     fn configure_intent(&self) -> ConfigureIntent;
     fn send_pending_configure(&mut self);
@@ -422,12 +428,21 @@ enum InteractiveMoveState<W: LayoutElement> {
     },
     /// Moving; the window is no longer in the layout.
     Moving(InteractiveMoveData<W>),
+    /// Dragging a stage-manager strip thumbnail onto the stage.
+    StageManagerStrip {
+        window_id: W::Id,
+        pointer_delta: Point<f64, Logical>,
+        pointer_pos_within_output: Point<f64, Logical>,
+        output: Output,
+    },
 }
 
 #[derive(Debug)]
 struct InteractiveMoveData<W: LayoutElement> {
     /// The window being moved.
     pub(self) tile: Tile<W>,
+    /// Output where the interactive move started.
+    pub(self) origin_output: Output,
     /// Output where the window is currently located/rendered.
     pub(self) output: Output,
     /// Current pointer position within output.
@@ -1157,6 +1172,23 @@ impl<W: LayoutElement> Layout<W> {
         window: &W::Id,
         transaction: Transaction,
     ) -> Option<RemovedTile<W>> {
+        self.remove_window_inner(window, transaction, false)
+    }
+
+    fn remove_window_for_interactive_move(
+        &mut self,
+        window: &W::Id,
+        transaction: Transaction,
+    ) -> Option<RemovedTile<W>> {
+        self.remove_window_inner(window, transaction, true)
+    }
+
+    fn remove_window_inner(
+        &mut self,
+        window: &W::Id,
+        transaction: Transaction,
+        for_interactive_move: bool,
+    ) -> Option<RemovedTile<W>> {
         if let Some(state) = &self.interactive_move {
             match state {
                 InteractiveMoveState::Starting { window_id, .. } => {
@@ -1189,6 +1221,11 @@ impl<W: LayoutElement> Layout<W> {
                         });
                     }
                 }
+                InteractiveMoveState::StageManagerStrip { window_id, .. } => {
+                    if window_id == window {
+                        self.interactive_move_end(window);
+                    }
+                }
             }
         }
 
@@ -1197,7 +1234,11 @@ impl<W: LayoutElement> Layout<W> {
                 for mon in monitors {
                     for (idx, ws) in mon.workspaces.iter_mut().enumerate() {
                         if ws.has_window(window) {
-                            let removed = ws.remove_tile(window, transaction);
+                            let removed = if for_interactive_move {
+                                ws.remove_tile_for_interactive_move(window, transaction)
+                            } else {
+                                ws.remove_tile(window, transaction)
+                            };
 
                             // Clean up empty workspaces that are not active and not last.
                             if !ws.has_windows_or_name()
@@ -1231,7 +1272,11 @@ impl<W: LayoutElement> Layout<W> {
             MonitorSet::NoOutputs { workspaces, .. } => {
                 for (idx, ws) in workspaces.iter_mut().enumerate() {
                     if ws.has_window(window) {
-                        let removed = ws.remove_tile(window, transaction);
+                        let removed = if for_interactive_move {
+                            ws.remove_tile_for_interactive_move(window, transaction)
+                        } else {
+                            ws.remove_tile(window, transaction)
+                        };
 
                         // Clean up empty workspaces.
                         if !ws.has_windows_or_name() {
@@ -1250,6 +1295,16 @@ impl<W: LayoutElement> Layout<W> {
     pub fn descendants_added(&mut self, id: &W::Id) -> bool {
         for ws in self.workspaces_mut() {
             if ws.descendants_added(id) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub fn stage_manager_on_parent_changed(&mut self, child: &W::Id) -> bool {
+        for ws in self.workspaces_mut() {
+            if ws.has_window(child) && ws.stage_manager_on_parent_changed(child) {
                 return true;
             }
         }
@@ -1562,12 +1617,30 @@ impl<W: LayoutElement> Layout<W> {
             return true;
         }
 
-        ws_idx == mon.active_workspace_idx
+        let ws = &mon.workspaces[ws_idx];
+        if ws.stage_manager_parallel_active() {
+            return false;
+        }
+
+        ws_idx == mon.active_workspace_idx && !ws.is_active_pending_fullscreen()
+    }
+
+    pub fn is_interactive_move_active(&self) -> bool {
+        matches!(
+            self.interactive_move,
+            Some(InteractiveMoveState::Starting { .. }) | Some(InteractiveMoveState::Moving(_))
+        )
     }
 
     pub fn activate_window(&mut self, window: &W::Id) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
-            if move_.tile.window().id() == window {
+            if move_.tile.window().id() != window {
+                return;
+            }
+        } else if let Some(InteractiveMoveState::Starting { window_id, .. }) =
+            &self.interactive_move
+        {
+            if window_id != window {
                 return;
             }
         }
@@ -1603,7 +1676,13 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn activate_window_without_raising(&mut self, window: &W::Id) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
-            if move_.tile.window().id() == window {
+            if move_.tile.window().id() != window {
+                return;
+            }
+        } else if let Some(InteractiveMoveState::Starting { window_id, .. }) =
+            &self.interactive_move
+        {
+            if window_id != window {
                 return;
             }
         }
@@ -1822,6 +1901,125 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn monitor_for_output(&self, output: &Output) -> Option<&Monitor<W>> {
         self.monitors().find(|mon| &mon.output == output)
+    }
+
+    pub fn set_stage_manager_suppress_auto_use_as_main(&mut self, suppress: bool) {
+        for ws in self.workspaces_mut() {
+            ws.set_stage_manager_suppress_auto_use_as_main(suppress);
+        }
+    }
+
+    pub fn stage_manager_pointer_motion(
+        &mut self,
+        output: &Output,
+        point: Point<f64, Logical>,
+    ) -> bool {
+        if self.is_interactive_move_active() {
+            return false;
+        }
+        if self.options.layout.stage_manager.is_none() {
+            return false;
+        }
+        let Some(mon) = self.monitor_for_output_mut(output) else {
+            return false;
+        };
+        mon.active_workspace().stage_manager_pointer_motion(point)
+    }
+
+    pub fn stage_manager_scroll(
+        &mut self,
+        output: &Output,
+        point: Point<f64, Logical>,
+        delta_y: f64,
+    ) -> bool {
+        if self.options.layout.stage_manager.is_none() || delta_y == 0. {
+            return false;
+        }
+        let Some(mon) = self.monitor_for_output_mut(output) else {
+            return false;
+        };
+        mon.active_workspace().stage_manager_scroll(point, delta_y)
+    }
+
+    pub fn is_stage_manager_strip_window(&self, window: &W::Id) -> bool {
+        self.workspaces()
+            .any(|(_, _, ws)| ws.is_stage_manager_strip_window(window))
+    }
+
+    pub fn stage_manager_promote_cast(&mut self, window: &W::Id) -> bool {
+        self.stage_manager_action_on_window(window, |ws, window| {
+            ws.stage_manager_promote_cast(window)
+        })
+    }
+
+    pub fn stage_manager_toggle_main(&mut self) -> bool {
+        let Some(window) = self.focus().map(|w| w.id().clone()) else {
+            return false;
+        };
+        self.stage_manager_action_on_window(&window, |ws, window| {
+            ws.stage_manager_toggle_main(window)
+        })
+    }
+
+    pub fn stage_manager_promote_parallel(&mut self) -> bool {
+        let Some(window) = self.focus().map(|w| w.id().clone()) else {
+            return false;
+        };
+        self.stage_manager_action_on_window(&window, |ws, window| {
+            ws.stage_manager_promote_parallel(window)
+        })
+    }
+
+    pub fn stage_manager_reset_main_layout(&mut self) -> bool {
+        let Some(ws) = self.active_workspace_mut() else {
+            return false;
+        };
+        ws.stage_manager_reset_main_layout()
+    }
+
+    fn refresh_stage_manager_all_workspaces(&mut self) {
+        if self.options.layout.stage_manager.is_none() {
+            return;
+        }
+        for ws in self.workspaces_mut() {
+            ws.refresh_stage_manager_layout();
+        }
+    }
+
+    fn stage_manager_action_on_window(
+        &mut self,
+        window: &W::Id,
+        f: impl FnOnce(&mut Workspace<W>, &W::Id) -> bool,
+    ) -> bool {
+        let MonitorSet::Normal {
+            monitors,
+            active_monitor_idx,
+            ..
+        } = &mut self.monitor_set
+        else {
+            return false;
+        };
+
+        for (monitor_idx, mon) in monitors.iter_mut().enumerate() {
+            for (workspace_idx, ws) in mon.workspaces.iter_mut().enumerate() {
+                if !ws.has_window(window) {
+                    continue;
+                }
+                if !f(ws, window) {
+                    return false;
+                }
+                *active_monitor_idx = monitor_idx;
+                match &mon.workspace_switch {
+                    Some(WorkspaceSwitch::Gesture(gesture))
+                        if gesture.current_idx.floor() == workspace_idx as f64
+                            || gesture.current_idx.ceil() == workspace_idx as f64 => {}
+                    _ => mon.switch_workspace(workspace_idx),
+                }
+                return true;
+            }
+        }
+
+        false
     }
 
     pub fn monitor_for_output_mut(&mut self, output: &Output) -> Option<&mut Monitor<W>> {
@@ -2504,6 +2702,18 @@ impl<W: LayoutElement> Layout<W> {
                             );
                         }
                     }
+                }
+                InteractiveMoveState::StageManagerStrip {
+                    window_id,
+                    pointer_delta: _,
+                    pointer_pos_within_output: _,
+                    output: _,
+                } => {
+                    assert!(
+                        self.has_window(window_id),
+                        "interactive stage-manager strip move must be on an existing window"
+                    );
+                    move_win_id = Some(window_id.clone());
                 }
             }
         }
@@ -3326,6 +3536,17 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
+    /// Restore this monitor's layout focus when the pointer enters it (focus-follows-mouse).
+    pub fn focus_follows_mouse_enter_output(&mut self, output: &Output) {
+        let Some(id) = self.monitor_for_output(output).and_then(|mon| {
+            mon.active_workspace_ref()
+                .focus_follows_mouse_monitor_target()
+        }) else {
+            return;
+        };
+        self.activate_window_without_raising(&id);
+    }
+
     pub fn move_to_output(
         &mut self,
         window: Option<&W::Id>,
@@ -3338,6 +3559,8 @@ impl<W: LayoutElement> Layout<W> {
                 return;
             }
         }
+
+        let mut refresh_stage_manager = false;
 
         if let MonitorSet::Normal {
             monitors,
@@ -3403,6 +3626,9 @@ impl<W: LayoutElement> Layout<W> {
 
             removed.tile.stop_move_animations();
 
+            let window_id = removed.tile.window().id().clone();
+            let cross_monitor = mon_idx != new_idx;
+
             let mon = &mut monitors[new_idx];
             mon.add_tile(
                 removed.tile,
@@ -3417,6 +3643,13 @@ impl<W: LayoutElement> Layout<W> {
                 removed.is_floating,
                 None,
             );
+
+            if cross_monitor && self.options.layout.stage_manager.is_some() {
+                monitors[new_idx].workspaces[workspace_idx]
+                    .stage_manager_cross_monitor_drop(&window_id);
+                refresh_stage_manager = true;
+            }
+
             if activate.map_smart(|| false) {
                 *active_monitor_idx = new_idx;
             }
@@ -3425,6 +3658,10 @@ impl<W: LayoutElement> Layout<W> {
             if mon.workspace_switch.is_none() {
                 monitors[mon_idx].clean_up_workspaces();
             }
+        }
+
+        if refresh_stage_manager {
+            self.refresh_stage_manager_all_workspaces();
         }
     }
 
@@ -3962,21 +4199,41 @@ impl<W: LayoutElement> Layout<W> {
                 }
                 .band(sq_dist / INTERACTIVE_MOVE_START_THRESHOLD);
 
-                let (is_floating, tile, workspace_config) = self
-                    .workspaces_mut()
-                    .find(|ws| ws.has_window(&window_id))
-                    .map(|ws| {
-                        let workspace_config = ws.layout_config().cloned().map(|c| (ws.id(), c));
-                        (
-                            ws.is_floating(&window_id),
-                            ws.tiles_mut()
-                                .find(|tile| *tile.window().id() == window_id)
-                                .unwrap(),
-                            workspace_config,
-                        )
-                    })
-                    .unwrap();
-                tile.interactive_move_offset = pointer_delta.upscale(factor);
+                let is_stage_strip = self
+                    .workspaces()
+                    .find(|(_, _, ws)| ws.has_window(&window_id))
+                    .is_some_and(|(_, _, ws)| ws.is_stage_manager_strip_window(&window_id));
+
+                let (is_floating, workspace_config) = {
+                    let offset = if is_stage_strip && sq_dist >= INTERACTIVE_MOVE_START_THRESHOLD {
+                        pointer_delta
+                    } else {
+                        pointer_delta.upscale(factor)
+                    };
+                    self.workspaces_mut()
+                        .find(|ws| ws.has_window(&window_id))
+                        .map(|ws| {
+                            let workspace_config =
+                                ws.layout_config().cloned().map(|c| (ws.id(), c));
+                            if let Some(tile) =
+                                ws.tiles_mut().find(|tile| *tile.window().id() == window_id)
+                            {
+                                tile.interactive_move_offset = offset;
+                            }
+                            (ws.is_floating(&window_id), workspace_config)
+                        })
+                        .unwrap()
+                };
+
+                if is_stage_strip && sq_dist >= INTERACTIVE_MOVE_START_THRESHOLD {
+                    self.interactive_move = Some(InteractiveMoveState::StageManagerStrip {
+                        window_id: window_id.clone(),
+                        pointer_delta,
+                        pointer_pos_within_output,
+                        output,
+                    });
+                    return true;
+                }
 
                 // Put it back to be able to easily return.
                 self.interactive_move = Some(InteractiveMoveState::Starting {
@@ -4036,7 +4293,9 @@ impl<W: LayoutElement> Layout<W> {
                     width,
                     is_full_width,
                     is_floating,
-                } = self.remove_window(window, Transaction::new()).unwrap();
+                } = self
+                    .remove_window_for_interactive_move(window, Transaction::new())
+                    .unwrap();
 
                 tile.stop_move_animations();
                 tile.interactive_move_offset = Point::from((0., 0.));
@@ -4072,6 +4331,7 @@ impl<W: LayoutElement> Layout<W> {
 
                 let mut data = InteractiveMoveData {
                     tile,
+                    origin_output: output.clone(),
                     output,
                     pointer_pos_within_output,
                     width,
@@ -4089,6 +4349,40 @@ impl<W: LayoutElement> Layout<W> {
                 }
 
                 self.interactive_move = Some(InteractiveMoveState::Moving(data));
+            }
+            InteractiveMoveState::StageManagerStrip {
+                window_id,
+                mut pointer_delta,
+                pointer_pos_within_output: mut stored_pointer_pos,
+                output: move_output,
+            } => {
+                if window_id != *window {
+                    self.interactive_move = Some(InteractiveMoveState::StageManagerStrip {
+                        window_id,
+                        pointer_delta,
+                        pointer_pos_within_output: stored_pointer_pos,
+                        output: move_output,
+                    });
+                    return false;
+                }
+
+                let zoom = self.overview_zoom();
+                pointer_delta += delta.downscale(zoom);
+                stored_pointer_pos = pointer_pos_within_output;
+
+                if let Some(ws) = self.workspaces_mut().find(|ws| ws.has_window(&window_id)) {
+                    if let Some(tile) = ws.tiles_mut().find(|tile| *tile.window().id() == window_id)
+                    {
+                        tile.interactive_move_offset = pointer_delta;
+                    }
+                }
+
+                self.interactive_move = Some(InteractiveMoveState::StageManagerStrip {
+                    window_id,
+                    pointer_delta,
+                    pointer_pos_within_output: stored_pointer_pos,
+                    output: move_output,
+                });
             }
             InteractiveMoveState::Moving(mut move_) => {
                 if window != move_.tile.window().id() {
@@ -4192,6 +4486,33 @@ impl<W: LayoutElement> Layout<W> {
 
                 return;
             }
+            InteractiveMoveState::StageManagerStrip { window_id, .. } => {
+                if window_id != window {
+                    return;
+                }
+
+                let Some(InteractiveMoveState::StageManagerStrip {
+                    window_id,
+                    pointer_pos_within_output,
+                    ..
+                }) = self.interactive_move.take()
+                else {
+                    unreachable!()
+                };
+
+                for mon in self.monitors_mut() {
+                    mon.dnd_scroll_gesture_end();
+                }
+
+                for ws in self.workspaces_mut() {
+                    ws.dnd_scroll_gesture_end();
+                    if ws.has_window(&window_id) {
+                        ws.stage_manager_strip_drag_end(&window_id, pointer_pos_within_output);
+                    }
+                }
+
+                return;
+            }
             InteractiveMoveState::Moving(move_) => move_,
         };
 
@@ -4202,6 +4523,10 @@ impl<W: LayoutElement> Layout<W> {
         let Some(InteractiveMoveState::Moving(mut move_)) = self.interactive_move.take() else {
             unreachable!()
         };
+
+        for ws in self.workspaces_mut() {
+            ws.stage_manager_end_interactive_move();
+        }
 
         for mon in self.monitors_mut() {
             mon.dnd_scroll_gesture_end();
@@ -4223,6 +4548,12 @@ impl<W: LayoutElement> Layout<W> {
 
         // Dragging in the overview shouldn't switch the workspace and so on.
         let allow_to_activate_workspace = !self.overview_open;
+
+        let win_id = move_.tile.window().id().clone();
+        let pointer_pos_within_output = move_.pointer_pos_within_output;
+        let origin_output = move_.origin_output.clone();
+        let drop_output = move_.output.clone();
+        let cross_monitor_drop = origin_output != drop_output;
 
         match &mut self.monitor_set {
             MonitorSet::Normal {
@@ -4279,7 +4610,6 @@ impl<W: LayoutElement> Layout<W> {
                         (mon, insert_ws, position, Some(ws_geo.loc), zoom)
                     };
 
-                let win_id = move_.tile.window().id().clone();
                 let tile_render_loc = move_.tile_render_location(zoom);
 
                 let ws_idx = match insert_ws {
@@ -4411,6 +4741,22 @@ impl<W: LayoutElement> Layout<W> {
                     move_.is_floating,
                     None,
                 );
+            }
+        }
+
+        if self.options.layout.stage_manager.is_some() {
+            for ws in self.workspaces_mut() {
+                if !ws.has_window(&win_id) {
+                    continue;
+                }
+                if cross_monitor_drop {
+                    ws.stage_manager_cross_monitor_drop(&win_id);
+                } else {
+                    ws.stage_manager_strip_drag_end(&win_id, pointer_pos_within_output);
+                }
+            }
+            if cross_monitor_drop {
+                self.refresh_stage_manager_all_workspaces();
             }
         }
     }

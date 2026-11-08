@@ -507,6 +507,11 @@ fn action_name(action: &Action) -> String {
             String::from("Switch Focus Between Floating and Tiling")
         }
         Action::ToggleOverview => String::from("Open the Overview"),
+        Action::StageManagerToggleMain => String::from("Stage Manager: Toggle Main / Cast Strip"),
+        Action::StageManagerPromoteParallel => {
+            String::from("Stage Manager: Show Parallel on Stage")
+        }
+        Action::StageManagerResetMainLayout => String::from("Stage Manager: Reset Main Layout"),
         Action::Screenshot(_, _) => String::from("Take a Screenshot"),
         Action::Spawn(args) => format!(
             "Spawn <span face='monospace' bgcolor='#000000'>{}</span>",

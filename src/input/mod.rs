@@ -23,10 +23,11 @@ use smithay::backend::libinput::LibinputInputBackend;
 use smithay::input::dnd::DnDGrab;
 use smithay::input::keyboard::{keysyms, KeyboardSource, Keysym, Layout, ModifiersState};
 use smithay::input::pointer::{
-    AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, Focus, GestureHoldBeginEvent,
+    AxisFrame, ButtonEvent, ClickGrab, CursorIcon, CursorImageStatus, Focus, GestureHoldBeginEvent,
     GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent,
     GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
-    GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab, RelativeMotionEvent,
+    GrabStartData as PointerGrabStartData, MotionEvent, PointerGrab, PointerInnerHandle,
+    RelativeMotionEvent,
 };
 use smithay::input::tablet::tool::GrabStartData as TabletToolGrabStartData;
 use smithay::input::tablet::{TabletDescriptor, TabletSeatHandler, TabletSeatTrait};
@@ -86,6 +87,197 @@ pub enum AnyStartData<D: SeatHandler + TabletSeatHandler> {
     Pointer(PointerGrabStartData<D>),
     Touch(TouchGrabStartData<D>),
     TabletTool(TabletToolGrabStartData<D>),
+}
+
+/// Implicit click grab that keeps scaled viewport coordinates correct while dragging.
+struct ViewportZoomClickGrab {
+    start_data: PointerGrabStartData<State>,
+    output: Output,
+    surface: WlSurface,
+    world_surface_origin: Point<f64, Logical>,
+}
+
+impl ViewportZoomClickGrab {
+    fn new(state: &State, button: u32) -> Option<Self> {
+        let pointer = state.niri.seat.get_pointer()?;
+        let location = pointer.current_location();
+        let (surface, focus_origin) = state.niri.pointer_contents.surface.clone()?;
+        let (output, screen_pos) = state.niri.output_under(location)?;
+        let viewport = state.niri.output_state.get(output)?.viewport_zoom;
+        if !viewport.active {
+            return None;
+        }
+
+        let surface_local = location - focus_origin;
+        let world_surface_origin = viewport.screen_to_world(screen_pos) - surface_local;
+        Some(Self {
+            start_data: PointerGrabStartData {
+                focus: Some((surface.clone(), focus_origin)),
+                button,
+                location,
+            },
+            output: output.clone(),
+            surface,
+            world_surface_origin,
+        })
+    }
+
+    fn focus_at(
+        &self,
+        state: &State,
+        location: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let output_loc = state
+            .niri
+            .global_space
+            .output_geometry(&self.output)?
+            .loc
+            .to_f64();
+        let screen_pos = location - output_loc;
+        let viewport = state.niri.output_state.get(&self.output)?.viewport_zoom;
+        let surface_local = viewport.screen_to_world(screen_pos) - self.world_surface_origin;
+        Some((self.surface.clone(), location - surface_local))
+    }
+}
+
+impl PointerGrab<State> for ViewportZoomClickGrab {
+    fn motion(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        _focus: Option<(WlSurface, Point<f64, Logical>)>,
+        event: &MotionEvent,
+    ) {
+        let focus = self
+            .focus_at(data, event.location)
+            .or_else(|| self.start_data.focus.clone());
+        handle.motion(data, focus, event);
+    }
+
+    fn relative_motion(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        focus: Option<(WlSurface, Point<f64, Logical>)>,
+        event: &RelativeMotionEvent,
+    ) {
+        let scale = data
+            .niri
+            .output_state
+            .get(&self.output)
+            .filter(|state| state.viewport_zoom.active)
+            .map(|state| state.viewport_zoom.scale)
+            .unwrap_or(1.);
+        let event = RelativeMotionEvent {
+            delta: event.delta.downscale(scale),
+            delta_unaccel: event.delta_unaccel.downscale(scale),
+            time: event.time,
+        };
+        handle.relative_motion(data, focus, &event);
+    }
+
+    fn button(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &ButtonEvent,
+    ) {
+        handle.button(data, event);
+        if handle.current_pressed().is_empty() {
+            handle.unset_grab(self, data, event.serial, event.time, false);
+        }
+    }
+
+    fn axis(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        details: AxisFrame,
+    ) {
+        handle.axis(data, details);
+    }
+
+    fn frame(&mut self, data: &mut State, handle: &mut PointerInnerHandle<'_, State>) {
+        handle.frame(data);
+    }
+
+    fn gesture_swipe_begin(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GestureSwipeBeginEvent,
+    ) {
+        handle.gesture_swipe_begin(data, event);
+    }
+
+    fn gesture_swipe_update(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GestureSwipeUpdateEvent,
+    ) {
+        handle.gesture_swipe_update(data, event);
+    }
+
+    fn gesture_swipe_end(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GestureSwipeEndEvent,
+    ) {
+        handle.gesture_swipe_end(data, event);
+    }
+
+    fn gesture_pinch_begin(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GesturePinchBeginEvent,
+    ) {
+        handle.gesture_pinch_begin(data, event);
+    }
+
+    fn gesture_pinch_update(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GesturePinchUpdateEvent,
+    ) {
+        handle.gesture_pinch_update(data, event);
+    }
+
+    fn gesture_pinch_end(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GesturePinchEndEvent,
+    ) {
+        handle.gesture_pinch_end(data, event);
+    }
+
+    fn gesture_hold_begin(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GestureHoldBeginEvent,
+    ) {
+        handle.gesture_hold_begin(data, event);
+    }
+
+    fn gesture_hold_end(
+        &mut self,
+        data: &mut State,
+        handle: &mut PointerInnerHandle<'_, State>,
+        event: &GestureHoldEndEvent,
+    ) {
+        handle.gesture_hold_end(data, event);
+    }
+
+    fn start_data(&self) -> &PointerGrabStartData<State> {
+        &self.start_data
+    }
+
+    fn unset(&mut self, _data: &mut State) {}
 }
 
 impl<D: SeatHandler + TabletSeatHandler> AnyStartData<D> {
@@ -158,6 +350,7 @@ impl State {
         let _span = tracy_client::span!("process_input_event");
 
         // Make sure some logic like workspace clean-up has a chance to run before doing actions.
+        self.sync_stage_manager_auto_use_suppress();
         self.niri.advance_animations();
 
         if self.niri.monitors_active {
@@ -650,6 +843,61 @@ impl State {
                     return ShouldInterceptResult::InterceptOnly;
                 }
 
+                if this.niri.keyboard_pointer.active {
+                    let keyboard_pointer_key = raw.first().copied().or(modified);
+                    if crate::keyboard_pointer::is_allowed_bind_key(
+                        keyboard_pointer_key,
+                        modifiers,
+                        mod_key,
+                    ) {
+                        let res = {
+                            let is_locked = this.niri.is_locked();
+                            let is_in_screenshot = this.niri.screenshot_ui.is_open();
+                            let config = this.niri.config.borrow();
+                            let bindings = make_binds_iter(
+                                &config,
+                                &this.niri.screenshot_ui,
+                                &mut this.niri.window_mru_ui,
+                                #[cfg(feature = "dbus")]
+                                &this.niri.global_shortcuts_portal_binds,
+                                this.niri.keyboard_focus.is_overview(),
+                                modifiers,
+                            );
+
+                            should_intercept_key(
+                                &mut this.niri.suppressed_keys,
+                                &mut this.niri.pending_release_binds,
+                                &this.niri.bind_cooldown_timers,
+                                bindings,
+                                mod_key,
+                                key_code,
+                                modified,
+                                raw,
+                                pressed,
+                                modifiers,
+                                this.niri.config.borrow().input.disable_power_key_handling,
+                                is_inhibiting_shortcuts,
+                                is_locked,
+                                is_in_screenshot,
+                            )
+                        };
+
+                        if !matches!(res, ShouldInterceptResult::Forward) {
+                            return res;
+                        }
+                    }
+
+                    if let Some(key) = keyboard_pointer_key {
+                        this.keyboard_pointer_handle_key(key, pressed, modifiers);
+                    }
+                    if pressed {
+                        this.niri.suppressed_keys.insert(key_code);
+                    } else {
+                        this.niri.suppressed_keys.remove(&key_code);
+                    }
+                    return ShouldInterceptResult::InterceptOnly;
+                }
+
                 // Check if all modifiers were released while the MRU UI was open. If so, close the
                 // UI (which will also transfer the focus to the current MRU UI selection).
                 if this.niri.window_mru_ui.is_open() && !pressed && modifiers.is_empty() {
@@ -755,6 +1003,7 @@ impl State {
         match result {
             ShouldInterceptResult::ForwardAndHandle(bind)
             | ShouldInterceptResult::InterceptAndHandle(bind) => {
+                let bind = override_bind_for_viewport_zoom(&self.niri, bind);
                 if pressed && bind.repeat {
                     self.start_key_repeat(bind.clone());
                 }
@@ -2591,6 +2840,33 @@ impl State {
                 self.niri.layout.toggle_overview();
                 self.niri.queue_redraw_all();
             }
+            Action::StageManagerToggleMain => {
+                if self.niri.layout.stage_manager_toggle_main() {
+                    self.niri.queue_redraw_all();
+                }
+            }
+            Action::StageManagerPromoteParallel => {
+                if self.niri.layout.stage_manager_promote_parallel() {
+                    self.niri.queue_redraw_all();
+                }
+            }
+            Action::StageManagerResetMainLayout => {
+                if self.niri.layout.stage_manager_reset_main_layout() {
+                    self.niri.queue_redraw_all();
+                }
+            }
+            Action::ToggleViewportZoom => {
+                self.niri.toggle_viewport_zoom();
+            }
+            Action::ToggleKeyboardPointer => {
+                self.toggle_keyboard_pointer();
+            }
+            Action::ViewportZoomIn => {
+                self.niri.viewport_zoom_in();
+            }
+            Action::ViewportZoomOut => {
+                self.niri.viewport_zoom_out();
+            }
             Action::OpenOverview => {
                 if self.niri.layout.open_overview() {
                     self.niri.queue_redraw_all();
@@ -2915,6 +3191,15 @@ impl State {
 
         let under = self.niri.contents_under(new_pos);
 
+        let stage_pointer = self
+            .niri
+            .output_under(new_pos)
+            .map(|(output, pos)| (output.clone(), pos));
+        if let Some((output, pos_within_output)) = stage_pointer {
+            self.niri
+                .stage_manager_and_viewport_pointer_motion(&output, pos_within_output);
+        }
+
         // Handle confined pointer.
         if let Some((focus_surface, region)) = pointer_confined {
             let mut prevent = false;
@@ -3051,6 +3336,15 @@ impl State {
         let under = self.niri.contents_under(pos);
 
         self.niri.handle_focus_follows_mouse(&under);
+
+        let stage_pointer = self
+            .niri
+            .output_under(pos)
+            .map(|(output, p)| (output.clone(), p));
+        if let Some((output, pos_within_output)) = stage_pointer {
+            self.niri
+                .stage_manager_and_viewport_pointer_motion(&output, pos_within_output);
+        }
 
         self.niri.pointer_contents.clone_from(&under);
 
@@ -3332,10 +3626,11 @@ impl State {
                 else if button == Some(MouseButton::Right) && !pointer.is_grabbed() && mod_down {
                     let location = pointer.current_location();
                     let (output, pos_within_output) = self.niri.output_under(location).unwrap();
+                    let content_pos = self.niri.viewport_content_pos(output, pos_within_output);
                     let edges = self
                         .niri
                         .layout
-                        .resize_edges_under(output, pos_within_output)
+                        .resize_edges_under(output, content_pos)
                         .unwrap_or(ResizeEdge::empty());
 
                     if !edges.is_empty() {
@@ -3398,7 +3693,20 @@ impl State {
                 }
 
                 if !is_overview_open {
-                    self.niri.layout.activate_window(&window);
+                    let location = pointer.current_location();
+                    let output = self
+                        .niri
+                        .output_under(location)
+                        .map(|(output, _)| output.clone());
+                    if let Some(output) = output {
+                        self.niri.layout.focus_output(&output);
+                    }
+
+                    if self.niri.layout.is_stage_manager_strip_window(&window) {
+                        self.niri.layout.stage_manager_promote_cast(&window);
+                    } else {
+                        self.niri.layout.activate_window(&window);
+                    }
                 }
 
                 // FIXME: granular.
@@ -3463,6 +3771,10 @@ impl State {
             }
         }
 
+        let viewport_zoom_grab = (button_state == ButtonState::Pressed && !pointer.is_grabbed())
+            .then(|| ViewportZoomClickGrab::new(self, button_code))
+            .flatten();
+
         pointer.button(
             self,
             &ButtonEvent {
@@ -3472,6 +3784,15 @@ impl State {
                 time: event.time(),
             },
         );
+
+        if let Some(grab) = viewport_zoom_grab {
+            let is_default_click_grab = pointer
+                .with_grab(|_, current| current.is::<ClickGrab<State>>())
+                .unwrap_or(false);
+            if is_default_click_grab {
+                pointer.set_grab(self, grab, serial, Focus::Keep);
+            }
+        }
         pointer.frame(self);
     }
 
@@ -3515,6 +3836,24 @@ impl State {
             .overview;
 
         let is_mru_open = self.niri.window_mru_ui.is_open();
+
+        // Viewport zoom: Mod + scroll wheel adjusts scale while zoom is active.
+        if source == AxisSource::Wheel {
+            let mods = self.niri.seat.get_keyboard().unwrap().modifier_state();
+            let modifiers = modifiers_from_state(mods);
+            if modifiers.contains(mod_key.to_modifiers()) {
+                let pointer_pos = self.niri.seat.get_pointer().unwrap().current_location();
+                if let Some((output, pos)) = self.niri.output_under(pointer_pos) {
+                    let output = output.clone();
+                    if self.niri.viewport_zoom_active_on_output(&output) {
+                        let delta = vertical_amount_v120.unwrap_or(0.) / 120.;
+                        self.niri.viewport_zoom_scroll(&output, pos, delta);
+                        pointer.frame(self);
+                        return;
+                    }
+                }
+            }
+        }
 
         // Handle wheel scroll bindings.
         if source == AxisSource::Wheel {
@@ -3893,6 +4232,24 @@ impl State {
             }
             if event.amount(Axis::Vertical) == Some(0.0) {
                 frame = frame.stop(Axis::Vertical);
+            }
+        }
+
+        if vertical_amount != 0. {
+            let pos = pointer.current_location();
+            let stage_scroll = self
+                .niri
+                .output_under(pos)
+                .map(|(output, pos_within_output)| (output.clone(), pos_within_output));
+            if let Some((output, pos_within_output)) = stage_scroll {
+                if self.niri.layout.stage_manager_scroll(
+                    &output,
+                    pos_within_output,
+                    vertical_amount,
+                ) {
+                    self.niri.queue_redraw_all();
+                    return;
+                }
             }
         }
 
@@ -5186,7 +5543,7 @@ fn find_configured_switch_action(
         .map(|switch_action| Action::Spawn(switch_action.spawn.clone()))
 }
 
-fn modifiers_from_state(mods: ModifiersState) -> Modifiers {
+pub(crate) fn modifiers_from_state(mods: ModifiersState) -> Modifiers {
     let mut modifiers = Modifiers::empty();
     if mods.ctrl {
         modifiers |= Modifiers::CTRL;
@@ -5388,6 +5745,31 @@ fn bind_allowed_during_screenshot(bind: &Bind, pressed: bool) -> bool {
     }
 }
 
+/// When viewport zoom is active, remap Mod+Equal/Mod+Minus to zoom in/out instead of
+/// whatever they are bound to (e.g. set-column-width). When zoom is off, the original bind
+/// is returned unchanged — no persistent override state.
+fn override_bind_for_viewport_zoom(niri: &crate::niri::Niri, bind: Bind) -> Bind {
+    let Some(output) = niri.output_under_cursor() else {
+        return bind;
+    };
+    if !niri.viewport_zoom_active_on_output(&output) {
+        return bind;
+    }
+
+    let action = match bind.key.trigger {
+        Trigger::Keysym(sym) => match sym {
+            Keysym::equal | Keysym::plus | Keysym::KP_Add => Action::ViewportZoomIn,
+            Keysym::minus | Keysym::underscore | Keysym::KP_Subtract => Action::ViewportZoomOut,
+            _ => return bind,
+        },
+        _ => return bind,
+    };
+
+    Bind {
+        action: BoundAction::Press(action),
+        ..bind
+    }
+}
 pub fn apply_libinput_settings(
     config: &niri_config::Input,
     device: &mut input::Device,
